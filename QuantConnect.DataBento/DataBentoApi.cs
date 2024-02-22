@@ -18,7 +18,7 @@ using System.Globalization;
 using RestSharp;
 using RestSharp.Authenticators;
 
-namespace QuantConnect.DateBento.NewDirectory1;
+namespace QuantConnect.DateBento;
 
 public class DataBentoApi
 {

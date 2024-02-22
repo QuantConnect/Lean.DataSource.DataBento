@@ -12,7 +12,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
-*/
+ */
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -21,15 +22,12 @@ using QuantConnect.Configuration;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.DateBento;
-using QuantConnect.DateBento.NewDirectory1;
 using QuantConnect.Logging;
 using QuantConnect.Securities;
 using QuantConnect.Tests;
 using QuantConnect.Util;
 
 namespace QuantConnect.DataBento.Tests;
-
-
 
 [TestFixture]
 public class DataBentoHistoryProviderTests
@@ -43,22 +41,23 @@ public class DataBentoHistoryProviderTests
         _historyProvider = new DataBentoHistoryProvider(_apiKey, DataBentoApi.DataBentoPublishers.XCIS);
         _historyProvider.Initialize(
             new HistoryProviderInitializeParameters(null, null, null, null, null, null, null, false, null, null));
-
     }
+
     [TearDown]
     public void TearDown()
     {
         _historyProvider.Dispose();
     }
-    
+
     internal static TestCaseData[] HistoricalDataTestCases
     {
         get
         {
             var equitySymbol = Symbols.SPY;
-            var optionSymbol = Symbol.CreateOption(Symbols.SPY, Market.USA, OptionStyle.American, OptionRight.Call, 469m, new DateTime(2023, 12, 15));
+            var optionSymbol = Symbol.CreateOption(Symbols.SPY, Market.USA, OptionStyle.American, OptionRight.Call,
+                469m, new DateTime(2023, 12, 15));
             var symbols = new[] { equitySymbol }; //, optionSymbol };
-            var tickTypes = new[] { TickType.Trade };//, TickType.Quote };
+            var tickTypes = new[] { TickType.Trade }; //, TickType.Quote };
 
             return symbols
                 .Select(symbol => new[]
@@ -78,7 +77,7 @@ public class DataBentoHistoryProviderTests
                 .ToArray();
         }
     }
-    
+
     [TestCaseSource(nameof(HistoricalDataTestCases))]
     [Explicit("This tests require a databento api key, requires internet and do cost money.")]
     public void GetsHistoricalData(Symbol symbol, Resolution resolution, TimeSpan period, TickType tickType)
@@ -89,16 +88,21 @@ public class DataBentoHistoryProviderTests
 
         Log.Trace("Data points retrieved: " + history.Count);
 
-       AssertHistoricalDataResults(history.Select(x => x.AllData).SelectMany(x => x).ToList(), resolution, _historyProvider.DataPointCount);
+        AssertHistoricalDataResults(history.Select(x => x.AllData).SelectMany(x => x).ToList(), resolution,
+            _historyProvider.DataPointCount);
     }
-    
-    internal static void AssertHistoricalDataResults(List<BaseData> history, Resolution resolution, int? expectedCount = null)
+
+    internal static void AssertHistoricalDataResults(List<BaseData> history, Resolution resolution,
+        int? expectedCount = null)
     {
-        // Assert that we got some data
-        Assert.That(history, Is.Not.Empty);
         if (expectedCount.HasValue)
         {
             Assert.That(history.Count, Is.EqualTo(expectedCount));
+        }
+        else
+        {
+            // Assert that we got some data
+            Assert.That(history, Is.Not.Empty);
         }
 
         if (resolution > Resolution.Tick)
@@ -118,13 +122,16 @@ public class DataBentoHistoryProviderTests
             Assert.That(history, Is.All.Matches<BaseData>(tick => tick.GetType() == typeof(Tick)));
         }
     }
-    internal static HistoryRequest CreateHistoryRequest(Symbol symbol, Resolution resolution, TickType tickType, TimeSpan period)
+
+    internal static HistoryRequest CreateHistoryRequest(Symbol symbol, Resolution resolution, TickType tickType,
+        TimeSpan period)
     {
         var end = new DateTime(2023, 12, 15, 16, 0, 0);
         if (resolution == Resolution.Daily)
         {
             end = end.Date.AddDays(1);
         }
+
         var dataType = LeanData.GetDataType(resolution, tickType);
 
         return new HistoryRequest(end.Subtract(period),
@@ -140,5 +147,4 @@ public class DataBentoHistoryProviderTests
             DataNormalizationMode.Adjusted,
             tickType);
     }
-
 }

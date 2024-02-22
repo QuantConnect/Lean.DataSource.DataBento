@@ -19,7 +19,6 @@ using NodaTime;
 using QuantConnect.Configuration;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
-using QuantConnect.DateBento.NewDirectory1;
 using QuantConnect.Lean.Engine.DataFeeds;
 using QuantConnect.Lean.Engine.HistoricalData;
 using QuantConnect.Logging;
@@ -27,6 +26,8 @@ using HistoryRequest = QuantConnect.Data.HistoryRequest;
 
 namespace QuantConnect.DateBento
 {
+    
+    
     public class DataBentoHistoryProvider : SynchronizingHistoryProvider, IDisposable
     {
         private static readonly ReadOnlyCollection<SecurityType> _supportedSecurityTypes = Array.AsReadOnly(new[]
@@ -34,7 +35,7 @@ namespace QuantConnect.DateBento
             SecurityType.Equity,
         });
 
-        private readonly NewDirectory1.DataBentoApi _api;
+        private readonly DataBentoApi _api;
         private readonly DataBentoSymbolMapper _symbolMapper = new();
         private readonly string _apiKey;
         private readonly int _publisherId;
@@ -47,7 +48,7 @@ namespace QuantConnect.DateBento
 
         public override int DataPointCount => _dataPointCount;
 
-        public DataBentoHistoryProvider(string apiKey, DataBentoApi.DataBentoPublishers publisher = DataBentoApi.DataBentoPublishers.DBEQ) : this(
+        public DataBentoHistoryProvider(string apiKey, DataBentoApi.DataBentoPublishers publisher = DataBentoApi.DataBentoPublishers.XCIS) : this(
             apiKey, (int)publisher)
         {
         }
@@ -55,13 +56,13 @@ namespace QuantConnect.DateBento
         public DataBentoHistoryProvider(string apiKey, int publisherId)
         {
             _apiKey = apiKey;
-            _api = new NewDirectory1.DataBentoApi(apiKey);
+            _api = new DataBentoApi(apiKey);
             _publisherId = publisherId;
         }
 
         public DataBentoHistoryProvider() : this(
             Config.Get("databento-api-key"),
-            Config.GetInt("databento-publisher-id", (int)DataBentoApi.DataBentoPublishers.DBEQ))
+            Config.GetInt("databento-publisher-id", (int)DataBentoApi.DataBentoPublishers.XCIS))
         {
         }
 
