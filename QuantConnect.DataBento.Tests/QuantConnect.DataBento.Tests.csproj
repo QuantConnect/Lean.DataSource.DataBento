@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+		<Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+		<TargetFramework>net6.0</TargetFramework>
+		<IsPackable>false</IsPackable>
+		<TestProjectType>UnitTest</TestProjectType>
+		<OutputPath>bin\$(Configuration)\</OutputPath>
+		<Product>QuantConnect.DataBento.Tests</Product>
+		<RootNamespace>QuantConnect.DataBento.Tests</RootNamespace>
+		<AssemblyTitle>QuantConnect.DataBento.Tests</AssemblyTitle>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<PackageId>QuantConnect.DataBento.Tests</PackageId>
+	</PropertyGroup>
+	<ItemGroup>
+		<PackageReference Include="NUnit" Version="3.13.3" />
+		<PackageReference Include="NUnit3TestAdapter" Version="4.2.1">
+			<PrivateAssets>all</PrivateAssets>
+			<IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+		</PackageReference>
+		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.9.4" />
+		<PackageReference Include="Microsoft.TestPlatform.ObjectModel" Version="16.9.4" />
+	</ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\..\Lean\Tests\QuantConnect.Tests.csproj" />
+		<ProjectReference Include="..\QuantConnect.DataBento\QuantConnect.DataBento.csproj" />
+	</ItemGroup>
+	<ItemGroup>
+		<None Remove="config.json" />
+		<Content Include="config.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+</Project>

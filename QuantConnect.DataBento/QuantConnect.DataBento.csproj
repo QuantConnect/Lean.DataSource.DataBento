@@ -1,0 +1,39 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+		<Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+		<TargetFramework>net6.0</TargetFramework>
+		<Product>QuantConnect.DateBento</Product>
+		<RootNamespace>QuantConnect.DateBento</RootNamespace>
+		<AssemblyTitle>QuantConnect.DateBento</AssemblyTitle>
+		<OutputType>Library</OutputType>
+		<OutputPath>bin\$(Configuration)</OutputPath>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+		<Description>QuantConnect LEAN DateBento Data Source: DateBento Data Source plugin for Lean</Description>
+
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+		<PackageId>QuantConnect.DataBento</PackageId>
+	</PropertyGroup>
+
+	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+		<DebugType>full</DebugType>
+		<OutputPath>bin\Debug\</OutputPath>
+	</PropertyGroup>
+
+	<PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+		<DebugType>pdbonly</DebugType>
+		<OutputPath>bin\Release\</OutputPath>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Include="..\..\Lean\Common\Properties\SharedAssemblyInfo.cs" Link="Properties\SharedAssemblyInfo.cs" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="QuantConnect.Lean.Engine" Version="2.5.*" />
+	</ItemGroup>
+
+</Project>
