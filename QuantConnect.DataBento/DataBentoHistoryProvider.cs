@@ -110,6 +110,11 @@ namespace QuantConnect.DateBento
                     yield return data;
                 }
             }
+
+            if (request.TickType == TickType.Quote)
+            {
+                //todo figure out which dataset is the best.
+            }
         }
 
         /// <summary>
@@ -131,6 +136,8 @@ namespace QuantConnect.DateBento
         private IEnumerable<Tick> GetTicks(HistoryRequest request)
         {
             var ticker = _symbolMapper.GetBrokerageSymbol(request.Symbol);
+            
+            // todo what about the provider id here?
             var ticks = _api.GetTrades(ticker, request.StartTimeUtc, request.EndTimeUtc);
             foreach (var tick in ticks)
             {
