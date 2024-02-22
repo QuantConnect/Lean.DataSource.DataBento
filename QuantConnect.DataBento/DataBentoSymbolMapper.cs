@@ -36,29 +36,19 @@ public class DataBentoSymbolMapper : ISymbolMapper
             if (!_brokerageSymbolsCache.TryGetValue(symbol, out var brokerageSymbol))
             {
                 var ticker = symbol.Value.Replace(" ", "");
-                switch (symbol.SecurityType)
+
+                if (symbol.SecurityType is not SecurityType.Equity)
                 {
-                    case SecurityType.Equity:
-                        brokerageSymbol = ticker;
-                        break;
+                    throw new Exception(
+                        $"{nameof(DataBentoSymbolMapper)}.{nameof(GetBrokerageSymbol)}(): unsupported security type: {symbol.SecurityType}");
 
-                    //todo?
-                    case SecurityType.Index:
-                        brokerageSymbol = $"I:{ticker}";
-                        break;
-
-                    //todo?
-                    case SecurityType.Option:
-                    case SecurityType.IndexOption:
-                        brokerageSymbol = $"O:{ticker}";
-                        break;
-
-                    default:
-                        throw new Exception($"{nameof(DataBentoSymbolMapper)}.{nameof(GetBrokerageSymbol)}(): unsupported security type: {symbol.SecurityType}");
                 }
+               
+                brokerageSymbol = ticker;
+            
 
-                // todo
-                // Lean-to-Polygon symbol conversion is accurate, so we can cache it both ways
+                //todo is it? We don't need it unless we're implementing streams anyway
+                // Lean-to-DataBento symbol conversion is accurate, so we can cache it both ways
                 _brokerageSymbolsCache[symbol] = brokerageSymbol;
                 _leanSymbolsCache[brokerageSymbol] = symbol;
             }

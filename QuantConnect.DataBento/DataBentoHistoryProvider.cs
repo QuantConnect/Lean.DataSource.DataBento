@@ -32,9 +32,6 @@ namespace QuantConnect.DateBento
         private static readonly ReadOnlyCollection<SecurityType> _supportedSecurityTypes = Array.AsReadOnly(new[]
         {
             SecurityType.Equity,
-            SecurityType.Option,
-            SecurityType.IndexOption,
-            SecurityType.Index,
         });
 
         private readonly NewDirectory1.DataBentoApi _api;
