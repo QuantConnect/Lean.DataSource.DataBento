@@ -15,6 +15,9 @@
  */
 
 using System.Globalization;
+using Newtonsoft.Json.Linq;
+using QuantConnect.Logging;
+using QuantConnect.Util;
 using RestSharp;
 using RestSharp.Authenticators;
 
@@ -24,6 +27,8 @@ public class DataBentoApi
 {
     private readonly string _baseUrl = "https://hist.databento.com/v0";
     private readonly RestClient _restClient;
+
+    protected virtual RateGate RateLimiter { get; } = new(100, TimeSpan.FromSeconds(1));
 
     public DataBentoApi(string apiKey)
     {
@@ -139,6 +144,14 @@ public class DataBentoApi
 
     public IEnumerable<string[]> GetData(string symbol, string schema, DateTime start, DateTime end)
     {
+        if (RateLimiter.IsRateLimited)
+        {
+            Log.Trace($"{nameof(DataBentoApi)}.{nameof(GetData)}(): Rest API calls are limited; waiting to proceed.");
+        }
+
+        RateLimiter.WaitToProceed();
+
+
         var request = new RestRequest("/timeseries.get_range", Method.POST);
         request.AddParameter("dataset", "DBEQ.BASIC");
         request.AddParameter("start", start.ToString("O"));
@@ -150,7 +163,17 @@ public class DataBentoApi
         request.AddParameter("pretty_ts", true);
 
         var res = _restClient.Execute(request);
-        //todo error handling!
+
+        if (!res.IsSuccessful)
+        {
+            var errorContent = JObject.Parse(res.Content);
+            var error = errorContent.Value<string>("detail") ?? "Unknown error";
+
+            Log.Trace($"{nameof(DataBentoApi)}.{nameof(GetData)}(): Response does not indicate success: {error}.");
+
+            yield break;
+        }
+
         foreach (var line in res.Content.Split("\n")[1..].Where(x => !string.IsNullOrEmpty(x)))
         {
             yield return line.Split(',');
