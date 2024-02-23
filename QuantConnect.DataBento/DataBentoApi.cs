@@ -12,7 +12,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
-*/
+ */
 
 using System.Globalization;
 using RestSharp;
@@ -40,10 +40,11 @@ public class DataBentoApi
         var request = new RestRequest("/symbology.resolve", Method.POST);
 
         request.AddParameter("dataset", "DBEQ.BASIC");
-        request.AddParameter("symbols", "AAPL");
+        request.AddParameter("symbols", "SPY");
         request.AddParameter("stype_in", "raw_symbol");
         request.AddParameter("stype_out", "instrument_id ");
-        request.AddParameter("start_date", DateTime.UtcNow.AddDays(-10).Date.ToString("O"));
+        request.AddParameter("start_date", DateTime.UtcNow.AddDays(-365).Date.ToString("O"));
+        request.AddParameter("end_date", DateTime.UtcNow.Date.AddDays(-2).ToString("O"));
 
         var resp = _restClient.Execute(request);
     }
@@ -54,16 +55,9 @@ public class DataBentoApi
         var lines = GetData(symbol, "trades", start, end);
         foreach (var line in lines)
         {
-            //ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence
-
-            yield return new TradeEvent
-            {
-                ReceiveTimestamp = DateTime.Parse(line[0], CultureInfo.InvariantCulture),
-                EventTimestamp = DateTime.Parse(line[1], CultureInfo.InvariantCulture),
-                PublisherId = ushort.Parse(line[3], CultureInfo.InvariantCulture),
-                Price = decimal.Parse(line[8], CultureInfo.InvariantCulture),
-                Size = uint.Parse(line[9], CultureInfo.InvariantCulture),
-            };
+            var tradeEvent = new TradeEvent();
+            PopulateTradeEventFromLine(tradeEvent, line);
+            yield return tradeEvent;
         }
     }
 
@@ -103,6 +97,45 @@ public class DataBentoApi
         //todo error handling
     }
 
+    public IEnumerable<TradeBBOEvent> GetTBBOBookChanges(string symbol,
+        DateTime start,
+        DateTime end,
+        int? publisherId)
+    {
+        var schema = "tbbo";
+        var lines = GetData(symbol, schema, start, end);
+        foreach (var line in lines)
+        {
+            var tradeEvent = new TradeBBOEvent();
+            PopulateTradeEventFromLine(tradeEvent, line);
+            if (publisherId.HasValue && publisherId.Value != tradeEvent.PublisherId) continue;
+
+            //ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,bid_px_00,ask_px_00,bid_sz_00,ask_sz_00,bid_ct_00,ask_ct_00
+
+            tradeEvent.BidPrice = decimal.Parse(line[13], CultureInfo.InvariantCulture);
+            tradeEvent.AskPrice = decimal.Parse(line[14], CultureInfo.InvariantCulture);
+
+            tradeEvent.BidSize = uint.Parse(line[15], CultureInfo.InvariantCulture);
+            tradeEvent.AskSize = uint.Parse(line[16], CultureInfo.InvariantCulture);
+            tradeEvent.BidOrders = uint.Parse(line[17], CultureInfo.InvariantCulture);
+            tradeEvent.AskOrders = uint.Parse(line[18], CultureInfo.InvariantCulture);
+
+            yield return tradeEvent;
+        }
+    }
+
+    private void PopulateTradeEventFromLine(TradeEvent existingObj, string[] line)
+    {
+        //ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence
+
+        existingObj.ReceiveTimestamp = DateTime.Parse(line[0], CultureInfo.InvariantCulture);
+        existingObj.EventTimestamp = DateTime.Parse(line[1], CultureInfo.InvariantCulture);
+        existingObj.PublisherId = ushort.Parse(line[3], CultureInfo.InvariantCulture);
+        existingObj.Price = decimal.Parse(line[8], CultureInfo.InvariantCulture);
+        existingObj.Size = uint.Parse(line[9], CultureInfo.InvariantCulture);
+        existingObj.Depth = byte.Parse(line[7], CultureInfo.InvariantCulture);
+        existingObj.Action = 'T';
+    }
 
     public IEnumerable<string[]> GetData(string symbol, string schema, DateTime start, DateTime end)
     {
@@ -117,12 +150,23 @@ public class DataBentoApi
         request.AddParameter("pretty_ts", true);
 
         var res = _restClient.Execute(request);
+        //todo error handling!
         foreach (var line in res.Content.Split("\n")[1..].Where(x => !string.IsNullOrEmpty(x)))
         {
             yield return line.Split(',');
         }
     }
 
+
+    public class TradeBBOEvent : TradeEvent
+    {
+        public decimal BidPrice { get; set; }
+        public decimal AskPrice { get; set; }
+        public uint BidSize { get; set; }
+        public uint AskSize { get; set; }
+        public uint BidOrders { get; set; }
+        public uint AskOrders { get; set; }
+    }
 
     /// <summary>
     /// Represents a trade event.
@@ -139,10 +183,16 @@ public class DataBentoApi
         /// </summary>
         public uint InstrumentId { get; set; }
 
+
         /// <summary>
         /// The matching-engine-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
         /// </summary>
         public DateTime EventTimestamp { get; set; }
+
+        /// <summary>
+        /// The event action. Always Trade in the trades schema.
+        /// </summary>
+        public char Action { get; set; }
 
         /// <summary>
         /// The order price
@@ -153,11 +203,6 @@ public class DataBentoApi
         /// The order quantity.
         /// </summary>
         public uint Size { get; set; }
-
-        /// <summary>
-        /// The event action. Always Trade in the trades schema.
-        /// </summary>
-        public char Action { get; set; }
 
         /// <summary>
         /// The side of the aggressing order. Can be Ask, Bid, or None.

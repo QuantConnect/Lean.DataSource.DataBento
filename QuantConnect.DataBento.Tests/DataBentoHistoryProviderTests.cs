@@ -70,8 +70,8 @@ public class DataBentoHistoryProviderTests
                     new TestCaseData(symbol, Resolution.Daily, TimeSpan.FromDays(14), TickType.Trade),
 
                     // Quotes (Only Tick and Second resolutions are supported)
-                    //new TestCaseData(symbol, Resolution.Tick, TimeSpan.FromMinutes(5), TickType.Quote),
-                    //new TestCaseData(symbol, Resolution.Second, TimeSpan.FromMinutes(5), TickType.Quote),
+                    new TestCaseData(symbol, Resolution.Tick, TimeSpan.FromMinutes(5), TickType.Quote),
+                    new TestCaseData(symbol, Resolution.Second, TimeSpan.FromMinutes(5), TickType.Quote),
                 })
                 .SelectMany(x => x)
                 .ToArray();

@@ -18,16 +18,16 @@ using System.Collections.ObjectModel;
 using NodaTime;
 using QuantConnect.Configuration;
 using QuantConnect.Data;
+using QuantConnect.Data.Consolidators;
 using QuantConnect.Data.Market;
 using QuantConnect.Lean.Engine.DataFeeds;
 using QuantConnect.Lean.Engine.HistoricalData;
 using QuantConnect.Logging;
+using QuantConnect.Util;
 using HistoryRequest = QuantConnect.Data.HistoryRequest;
 
 namespace QuantConnect.DateBento
 {
-    
-    
     public class DataBentoHistoryProvider : SynchronizingHistoryProvider, IDisposable
     {
         private static readonly ReadOnlyCollection<SecurityType> _supportedSecurityTypes = Array.AsReadOnly(new[]
@@ -48,7 +48,8 @@ namespace QuantConnect.DateBento
 
         public override int DataPointCount => _dataPointCount;
 
-        public DataBentoHistoryProvider(string apiKey, DataBentoApi.DataBentoPublishers publisher = DataBentoApi.DataBentoPublishers.XCIS) : this(
+        public DataBentoHistoryProvider(string apiKey,
+            DataBentoApi.DataBentoPublishers publisher = DataBentoApi.DataBentoPublishers.XCIS) : this(
             apiKey, (int)publisher)
         {
         }
@@ -90,7 +91,15 @@ namespace QuantConnect.DateBento
                 yield break;
             }
 
-            // Use the trade aggregates API for resolutions above tick for fastest results
+            // Quote data can only be fetched from databento from their Quote Tick endpoint,
+            // which would be too slow for anything above second resolution or long time spans.
+            if (request.TickType == TickType.Quote && request.Resolution > Resolution.Second)
+            {
+                Log.Error(
+                    $"{nameof(DataBentoDataDownloader)}.{nameof(GetHistory)}(): Quote data above second resolution is not supported.");
+                yield break;
+            }
+
             if (request.TickType == TickType.Trade && request.Resolution > Resolution.Tick)
             {
                 foreach (var data in GetAggregates(request))
@@ -98,9 +107,8 @@ namespace QuantConnect.DateBento
                     Interlocked.Increment(ref _dataPointCount);
                     yield return data;
                 }
-
-                yield break;
-            }else if (request.TickType == TickType.Trade && request.Resolution == Resolution.Tick)
+            }
+            else if (request.TickType == TickType.Trade && request.Resolution == Resolution.Tick)
             {
                 foreach (var data in GetTicks(request))
                 {
@@ -108,10 +116,30 @@ namespace QuantConnect.DateBento
                     yield return data;
                 }
             }
-
-            if (request.TickType == TickType.Quote)
+            else if (request.TickType == TickType.Quote)
             {
-                //todo figure out which dataset is the best.
+                IDataConsolidator consolidator = request.Resolution != Resolution.Tick
+                    ? new TickQuoteBarConsolidator(request.Resolution.ToTimeSpan())
+                    : FilteredIdentityDataConsolidator.ForTickType(request.TickType);
+
+                var quotes = GetQuotes(request);
+                BaseData? consolidatedData = null;
+                DataConsolidatedHandler onDataConsolidated = (s, e) => { consolidatedData = (BaseData)e; };
+                consolidator.DataConsolidated += onDataConsolidated;
+
+                foreach (var data in quotes)
+                {
+                    consolidator.Update(data);
+                    if (consolidatedData != null)
+                    {
+                        Interlocked.Increment(ref _dataPointCount);
+                        yield return consolidatedData;
+                        consolidatedData = null;
+                    }
+                }
+
+                consolidator.DataConsolidated -= onDataConsolidated;
+                consolidator.DisposeSafely();
             }
         }
 
@@ -123,7 +151,8 @@ namespace QuantConnect.DateBento
             var ticker = _symbolMapper.GetBrokerageSymbol(request.Symbol);
             var resolutionTimeSpan = request.Resolution.ToTimeSpan();
 
-            var candles = _api.GetCandleData(ticker, request.Resolution, request.StartTimeUtc, request.EndTimeUtc,_publisherId);
+            var candles = _api.GetCandleData(ticker, request.Resolution, request.StartTimeUtc, request.EndTimeUtc,
+                _publisherId);
             foreach (var candle in candles)
             {
                 yield return new TradeBar(candle.Time, request.Symbol, candle.Open, candle.High, candle.Low,
@@ -131,10 +160,23 @@ namespace QuantConnect.DateBento
             }
         }
 
+        private IEnumerable<Tick> GetQuotes(HistoryRequest request)
+        {
+            var ticker = _symbolMapper.GetBrokerageSymbol(request.Symbol);
+
+            var quotes = _api.GetTBBOBookChanges(ticker, request.StartTimeUtc, request.EndTimeUtc, _publisherId);
+            foreach (var quote in quotes)
+            {
+                //todo exchange
+                yield return new Tick(quote.EventTimestamp, request.Symbol, string.Empty, Exchange.NYSE, quote.BidSize,
+                    quote.BidPrice, quote.AskSize, quote.AskPrice);
+            }
+        }
+
         private IEnumerable<Tick> GetTicks(HistoryRequest request)
         {
             var ticker = _symbolMapper.GetBrokerageSymbol(request.Symbol);
-            
+
             // todo what about the provider id here?
             var ticks = _api.GetTrades(ticker, request.StartTimeUtc, request.EndTimeUtc);
             foreach (var tick in ticks)

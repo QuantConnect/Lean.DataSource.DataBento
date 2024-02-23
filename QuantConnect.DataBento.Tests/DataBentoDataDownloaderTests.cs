@@ -17,10 +17,15 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using NUnit.Framework;
+using QuantConnect.Configuration;
 using QuantConnect.DateBento;
 using QuantConnect.Util;
 
 namespace QuantConnect.DataBento.Tests;
+
+public class DataBentoAdditionalTests
+{
+}
 
 public class DataBentoDataDownloaderTests
 {

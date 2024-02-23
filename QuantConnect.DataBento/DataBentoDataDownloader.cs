@@ -41,7 +41,7 @@ namespace QuantConnect.DateBento
                 yield break;
             }
 
-            if (tickType == TickType.Quote && resolution != Resolution.Tick)
+            if (tickType == TickType.Quote && resolution is not Resolution.Tick or Resolution.Second)
             {
                 Log.Error(
                     $"{nameof(DataBentoDataDownloader)}.{nameof(Get)}: Historical data request with TickType 'Quote' is not supported for resolutions other than Tick. Requested Resolution: {resolution}");
