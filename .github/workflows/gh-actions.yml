@@ -1,0 +1,55 @@
+name: Build & Test
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+    env:
+      QC_JOB_USER_ID: ${{ secrets.QC_JOB_USER_ID }}
+      QC_API_ACCESS_TOKEN: ${{ secrets.QC_API_ACCESS_TOKEN }}
+      QC_JOB_ORGANIZATION_ID: ${{ secrets.QC_JOB_ORGANIZATION_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Free space
+        run: df -h && rm -rf /opt/hostedtoolcache* && df -h
+
+      - name: Checkout Lean Same Branch
+        id: lean-same-branch
+        uses: actions/checkout@v2
+        continue-on-error: true
+        with:
+          ref: ${{ github.ref }}
+          repository: QuantConnect/Lean
+          path: Lean
+
+      - name: Checkout Lean Master
+        if: steps.lean-same-branch.outcome != 'success'
+        uses: actions/checkout@v2
+        with:
+          repository: QuantConnect/Lean
+          path: Lean
+          
+      - name: Move Lean
+        run: mv Lean ../Lean
+
+      - name: Pull Foundation Image
+        uses: addnab/docker-run-action@v3
+        with:
+          image: quantconnect/lean:foundation
+          options: -v /home/runner/work:/__w --workdir /__w/Lean.DataSource.DataBento/Lean.DataSource.DataBento -e QC_JOB_USER_ID=${{ secrets.QC_JOB_USER_ID }} -e QC_API_ACCESS_TOKEN=${{ secrets.QC_API_ACCESS_TOKEN }} -e QC_JOB_ORGANIZATION_ID=${{ secrets.QC_JOB_ORGANIZATION_ID }}
+      
+      - name: BuildDataSource
+        run: dotnet build ./QuantConnect.DataBento/QuantConnect.DataBento.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1
+
+      - name: BuildDataSourceTests
+        run: dotnet build ./QuantConnect.DataBento.Tests/QuantConnect.DataBento.Tests.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1
+
+      - name: Run Tests
+        run: dotnet test ./QuantConnect.DataBento.Tests/bin/Release/QuantConnect.DataBento.Tests.dll
