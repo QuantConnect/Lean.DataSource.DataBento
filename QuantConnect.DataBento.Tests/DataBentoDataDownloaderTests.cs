@@ -23,10 +23,8 @@ using QuantConnect.Util;
 
 namespace QuantConnect.DataBento.Tests;
 
-public class DataBentoAdditionalTests
-{
-}
 
+[TestFixture]
 public class DataBentoDataDownloaderTests
 {
     private DataBentoDataDownloader _downloader;

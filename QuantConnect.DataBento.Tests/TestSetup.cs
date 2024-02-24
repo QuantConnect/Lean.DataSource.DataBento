@@ -28,7 +28,7 @@ namespace QuantConnect.DataBento.Tests
     public class TestSetup
     {
         [OneTimeSetUp]
-        public void GlobalSetup()
+        public static void GlobalSetup()
         {
             Log.DebuggingEnabled = true;
             Log.LogHandler = new CompositeLogHandler();

@@ -55,9 +55,9 @@ public class DataBentoApi
     }
 
 
-    public IEnumerable<TradeEvent> GetTrades(string symbol, DateTime start, DateTime end)
+    public IEnumerable<TradeEvent> GetTrades(string ticker, DateTime start, DateTime end)
     {
-        var lines = GetData(symbol, "trades", start, end);
+        var lines = GetData(ticker, "trades", start, end);
         foreach (var line in lines)
         {
             var tradeEvent = new TradeEvent();
@@ -66,7 +66,7 @@ public class DataBentoApi
         }
     }
 
-    public IEnumerable<DataBentoCandle> GetCandleData(string symbol, Resolution resolution, DateTime start,
+    public IEnumerable<DataBentoCandle> GetCandleData(string ticker, Resolution resolution, DateTime start,
         DateTime end, int publisherId)
     {
         var schemaTimeframe = resolution switch
@@ -79,7 +79,7 @@ public class DataBentoApi
         };
         var schema = $"OHLCV-1{schemaTimeframe}";
 
-        var lines = GetData(symbol, schema, start, end);
+        var lines = GetData(ticker, schema, start, end);
 
 
         foreach (var line in lines)
@@ -102,13 +102,13 @@ public class DataBentoApi
         //todo error handling
     }
 
-    public IEnumerable<TradeBBOEvent> GetTBBOBookChanges(string symbol,
+    public IEnumerable<TradeBBOEvent> GetTBBOBookChanges(string ticker,
         DateTime start,
         DateTime end,
         int? publisherId)
     {
         var schema = "tbbo";
-        var lines = GetData(symbol, schema, start, end);
+        var lines = GetData(ticker, schema, start, end);
         foreach (var line in lines)
         {
             var tradeEvent = new TradeBBOEvent();
@@ -142,7 +142,7 @@ public class DataBentoApi
         existingObj.Action = 'T';
     }
 
-    public IEnumerable<string[]> GetData(string symbol, string schema, DateTime start, DateTime end)
+    public IEnumerable<string[]> GetData(string ticker, string schema, DateTime start, DateTime end)
     {
         if (RateLimiter.IsRateLimited)
         {
@@ -157,7 +157,7 @@ public class DataBentoApi
         request.AddParameter("start", start.ToString("O"));
         request.AddParameter("end", end.ToString("O"));
         request.AddParameter("schema", schema);
-        request.AddParameter("symbols", symbol);
+        request.AddParameter("symbols", ticker);
         request.AddParameter("encoding", "csv");
         request.AddParameter("pretty_px", true);
         request.AddParameter("pretty_ts", true);

@@ -54,10 +54,7 @@ public class DataBentoHistoryProviderTests
         get
         {
             var equitySymbol = Symbols.SPY;
-            var optionSymbol = Symbol.CreateOption(Symbols.SPY, Market.USA, OptionStyle.American, OptionRight.Call,
-                469m, new DateTime(2023, 12, 15));
             var symbols = new[] { equitySymbol }; //, optionSymbol };
-            var tickTypes = new[] { TickType.Trade }; //, TickType.Quote };
 
             return symbols
                 .Select(symbol => new[]
@@ -91,7 +88,7 @@ public class DataBentoHistoryProviderTests
         AssertHistoricalDataResults(history.Select(x => x.AllData).SelectMany(x => x).ToList(), resolution,
             _historyProvider.DataPointCount);
     }
-
+    
     internal static void AssertHistoricalDataResults(List<BaseData> history, Resolution resolution,
         int? expectedCount = null)
     {
