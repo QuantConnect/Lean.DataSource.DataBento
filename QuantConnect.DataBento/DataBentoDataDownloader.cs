@@ -21,6 +21,7 @@ using System.Net.Http;
 using System.Globalization;
 using System.Collections.Generic;
 using CsvHelper;
+using CsvHelper.Configuration.Attributes;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Util;
@@ -41,6 +42,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
         /// <inheritdoc cref="MarketHoursDatabase" />
         private readonly MarketHoursDatabase _marketHoursDatabase;
+        private const decimal PriceScaleFactor = 1e-9m;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DataBentoDataDownloader"/>
@@ -104,32 +106,68 @@ namespace QuantConnect.Lean.DataSource.DataBento
             using var reader = new StreamReader(stream);
             using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
 
-            // base data conversion
-            foreach (var record in csv.GetRecords<DatabentoTrade>())
+            if (tickType == TickType.Trade)
             {
-                if (resolution == Resolution.Tick)
+                foreach (var record in csv.GetRecords<DatabentoBar>())
                 {
-                    yield return new Tick
+                    if (resolution == Resolution.Tick)
                     {
-                        Time = record.Timestamp,
-                        Symbol = symbol,
-                        Value = record.Price,
-                        Quantity = record.Size
-                    };
+                        yield return new Tick
+                        {
+                            Time = record.Timestamp,
+                            Symbol = symbol,
+                            Value = record.Price,
+                            Quantity = record.Size
+                        };
+                    }
+                    else
+                    {
+                        yield return new TradeBar
+                        {
+                            Symbol = symbol,
+                            Time = record.Timestamp,
+                            Open = record.Open,
+                            High = record.High,
+                            Low = record.Low,
+                            Close = record.Close,
+                            Volume = record.Volume
+                        };
+                    }
                 }
-                else
+            }
+            else if (tickType == TickType.Quote)
+            {
+                foreach (var record in csv.GetRecords<DatabentoQuote>())
                 {
-                    yield return new DataBentoDataType
+                    var bidPrice = record.BidPrice * PriceScaleFactor;
+                    var askPrice = record.AskPrice * PriceScaleFactor;
+
+                    if (resolution == Resolution.Tick)
                     {
-                        Symbol = symbol,
-                        Time = record.Timestamp,
-                        Open = record.Open,
-                        High = record.High,
-                        Low = record.Low,
-                        Close = record.Close,
-                        Volume = record.Volume,
-                        Value = record.Close
-                    };
+                        yield return new Tick
+                        {
+                            Time = record.Timestamp,
+                            Symbol = symbol,
+                            AskPrice = askPrice,
+                            BidPrice = bidPrice,
+                            AskSize = record.AskSize,
+                            BidSize = record.BidSize,
+                            TickType = TickType.Quote
+                        };
+                    }
+                    else
+                    {
+                        var bidBar = new Bar(bidPrice, bidPrice, bidPrice, bidPrice);
+                        var askBar = new Bar(askPrice, askPrice, askPrice, askPrice);
+                        yield return new QuoteBar(
+                            record.Timestamp,
+                            symbol,
+                            bidBar,
+                            record.BidSize,
+                            askBar,
+                            record.AskSize
+                        );
+                    }
                 }
             }
         }
@@ -147,23 +185,25 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private string GetSchema(Resolution resolution, TickType tickType)
         {
-            if (resolution == Resolution.Tick && tickType == TickType.Trade)
-                return "trades";
-
-            if (resolution == Resolution.Tick && tickType == TickType.Quote)
-                return "mbp-1"; // top of book
-
-            if (resolution == Resolution.Second)
-                return "ohlcv-1s";
-
-            if (resolution == Resolution.Minute)
-                return "ohlcv-1m";
-
-            if (resolution == Resolution.Hour)
-                return "ohlcv-1h";
-
-            if (resolution == Resolution.Daily)
-                return "ohlcv-1d";
+            if (tickType == TickType.Trade)
+            {
+                if (resolution == Resolution.Tick)
+                    return "trades";
+                if (resolution == Resolution.Second)
+                    return "ohlcv-1s";
+                if (resolution == Resolution.Minute)
+                    return "ohlcv-1m";
+                if (resolution == Resolution.Hour)
+                    return "ohlcv-1h";
+                if (resolution == Resolution.Daily)
+                    return "ohlcv-1d";
+            }
+            else if (tickType == TickType.Quote)
+            {
+                // top of book
+                if (resolution == Resolution.Tick || resolution == Resolution.Second || resolution == Resolution.Minute || resolution == Resolution.Hour || resolution == Resolution.Daily)
+                    return "mbp-1";
+            }
 
             throw new NotSupportedException($"Unsupported resolution {resolution} / {tickType}");
         }
@@ -171,7 +211,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Map Lean Symbol to Databento symbol string for continous
         /// </summary>
-        private string MapSymbol(Symbol symbol)
+        private static string MapSymbol(Symbol symbol)
         {
             if (symbol.SecurityType == SecurityType.Future)
             {
@@ -183,7 +223,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
 
         /// Class for parsing trade data from Databento
-        private class DatabentoTrade
+        private class DatabentoBar
         {
             public DateTime Timestamp { get; set; }
             public decimal Price { get; set; }
@@ -194,6 +234,19 @@ namespace QuantConnect.Lean.DataSource.DataBento
             public decimal Close { get; set; }
             public decimal Volume { get; set; }
         }
+
+        private class DatabentoQuote
+        {
+            [Name("ts_event")]
+            public DateTime Timestamp { get; set; }
+            [Name("bid_px_00")]
+            public long BidPrice { get; set; }
+            [Name("bid_sz_00")]
+            public int BidSize { get; set; }
+            [Name("ask_px_00")]
+            public long AskPrice { get; set; }
+            [Name("ask_sz_00")]
+            public int AskSize { get; set; }
+        }
     }
 }
-

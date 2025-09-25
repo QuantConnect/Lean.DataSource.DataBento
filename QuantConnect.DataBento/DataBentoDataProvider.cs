@@ -117,36 +117,6 @@ namespace QuantConnect.Lean.DataSource.DataBento
             });
         }
 
-        /// <inheritdoc cref="HistoryProviderBase.GetHistory(IEnumerable{HistoryRequest}, DateTimeZone)"/>
-        public override IEnumerable<Slice> GetHistory(IEnumerable<HistoryRequest> requests, DateTimeZone sliceTimeZone)
-        {
-            // Create subscription objects from the configs
-            var subscriptions = new List<Subscription>();
-            foreach (var request in requests)
-            {
-                // Retrieve the history for the current request
-                var history = GetHistory(request);
-
-                if (history == null)
-                {
-                    // If history is null, it indicates that the request contains wrong parameters
-                    // Handle the case where the request parameters are incorrect
-                    continue;
-                }
-
-                var subscription = CreateSubscription(request, history);
-                subscriptions.Add(subscription);
-            }
-
-            // Validate that at least one subscription is valid; otherwise, return null
-            if (subscriptions.Count == 0)
-            {
-                return null;
-            }
-
-            return CreateSliceEnumerableFromSubscriptions(subscriptions, sliceTimeZone);
-        }
-
         /// <summary>
         /// Subscribe to the specified configuration
         /// </summary>
@@ -166,9 +136,9 @@ namespace QuantConnect.Lean.DataSource.DataBento
             // Subscribe to live data if client is connected
             if (_client?.IsConnected == true)
             {
-                Task.Run(async () =>
+                Task.Run(() =>
                 {
-                    var success = await _client.Subscribe(dataConfig.Symbol, dataConfig.Resolution);
+                    var success = _client.Subscribe(dataConfig.Symbol, dataConfig.Resolution);
                     if (!success)
                     {
                         Log.Error($"DataBentoProvider.Subscribe(): Failed to subscribe to live data for {dataConfig.Symbol}");
@@ -191,9 +161,9 @@ namespace QuantConnect.Lean.DataSource.DataBento
             // Unsubscribe from live data if client is connected
             if (_client?.IsConnected == true)
             {
-                Task.Run(async () =>
+                Task.Run(() =>
                 {
-                    await _client.Unsubscribe(dataConfig.Symbol);
+                    _client.Unsubscribe(dataConfig.Symbol);
                 });
             }
         }
@@ -369,11 +339,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
             if (isConnected)
             {
                 // Resubscribe to all active subscriptions
-                Task.Run(async () =>
+                Task.Run(() =>
                 {
                     foreach (var config in _subscriptionManager.Subscriptions)
                     {
-                        await _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
+                        _client.Subscribe(config.Symbol, config.Resolution);
                     }
                 });
             }

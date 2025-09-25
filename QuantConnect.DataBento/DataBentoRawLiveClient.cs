@@ -39,10 +39,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
         private TcpClient _tcpClient;
         private NetworkStream _stream;
         private CancellationTokenSource _cancellationTokenSource;
-        private readonly ConcurrentDictionary<Symbol, Resolution> _subscriptions;
+        private readonly ConcurrentDictionary<Symbol, (Resolution, TickType)> _subscriptions;
         private readonly object _connectionLock = new object();
         private bool _isConnected;
         private bool _disposed;
+        private const decimal PriceScaleFactor = 1e-9m;
 
         /// <summary>
         /// Event fired when new data is received
@@ -63,12 +64,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// Initializes a new instance of the DatabentoRawClient
         /// </summary>
         /// <param name="apiKey">DataBento API key</param>
-        /// <param name="gateway">Gateway address (default: live.databento.com:13000)</param>
-        public DatabentoRawClient(string apiKey, string gateway = "live.databento.com:13000")
+        /// <param name="gateway">Gateway address defaultfor futures glbx-mdp3.lsg.databento.com:13000</param>
+        public DatabentoRawClient(string apiKey, string gateway = "glbx-mdp3.lsg.databento.com:13000")
         {
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
-            _subscriptions = new ConcurrentDictionary<Symbol, Resolution>();
+            _subscriptions = new ConcurrentDictionary<Symbol, (Resolution, TickType)>();
             _cancellationTokenSource = new CancellationTokenSource();
         }
 
@@ -164,7 +165,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         /// <param name="symbol">Symbol to subscribe to</param>
         /// <param name="resolution">Data resolution</param>
-        public async Task<bool> Subscribe(Symbol symbol, Resolution resolution)
+        /// <param name="tickType">The tick type</param>
+        public bool Subscribe(Symbol symbol, Resolution resolution, TickType tickType)
         {
             if (!IsConnected)
             {
@@ -175,7 +177,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
             try
             {
                 var databentoSymbol = MapSymbolToDataBento(symbol);
-                var schema = GetSchemaFromResolution(resolution);
+                var schema = GetSchema(resolution, tickType);
 
                 var subscribeMessage = new
                 {
@@ -189,10 +191,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 var messageJson = JsonSerializer.Serialize(subscribeMessage);
                 var messageBytes = Encoding.UTF8.GetBytes(messageJson + "\n");
 
-                await _stream.WriteAsync(messageBytes, 0, messageBytes.Length);
-                await _stream.FlushAsync();
+                _stream.Write(messageBytes, 0, messageBytes.Length);
+                _stream.Flush();
 
-                _subscriptions.TryAdd(symbol, resolution);
+                _subscriptions.TryAdd(symbol, (resolution, tickType));
                 Log.Debug($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} at {resolution} resolution");
 
                 return true;
@@ -203,11 +205,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 return false;
             }
         }
+
         /// <summary>
         /// Unsubscribes from live data for a symbol
         /// </summary>
         /// <param name="symbol">Symbol to unsubscribe from</param>
-        public async Task<bool> Unsubscribe(Symbol symbol)
+        public bool Unsubscribe(Symbol symbol)
         {
             if (!IsConnected)
                 return false;
@@ -225,8 +228,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 var messageJson = JsonSerializer.Serialize(unsubscribeMessage);
                 var messageBytes = Encoding.UTF8.GetBytes(messageJson + "\n");
 
-                await _stream.WriteAsync(messageBytes, 0, messageBytes.Length);
-                await _stream.FlushAsync();
+                _stream.Write(messageBytes, 0, messageBytes.Length);
+                _stream.Flush();
 
                 _subscriptions.TryRemove(symbol, out _);
                 Log.Debug($"DatabentoRawClient.Unsubscribe(): Unsubscribed from {symbol}");
@@ -391,11 +394,13 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 // Find the corresponding LEAN symbol
                 Symbol leanSymbol = null;
+                (Resolution resolution, TickType tickType) subscription = default;
                 foreach (var kvp in _subscriptions)
                 {
                     if (MapSymbolToDataBento(kvp.Key) == databentoSymbol)
                     {
                         leanSymbol = kvp.Key;
+                        subscription = kvp.Value;
                         break;
                     }
                 }
@@ -406,37 +411,77 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 BaseData data = null;
 
                 // Check if this is trade data or quote data based on available fields
-                if (root.TryGetProperty("price", out var priceElement) && 
-                    root.TryGetProperty("size", out var sizeElement))
+                if (subscription.tickType == TickType.Trade)
                 {
-                    // This is trade data
-                    data = new Tick
+                    if (root.TryGetProperty("price", out var priceElement) && 
+                        root.TryGetProperty("size", out var sizeElement))
                     {
-                        Symbol = leanSymbol,
-                        Time = timestamp,
-                        Value = priceElement.GetDecimal(),
-                        Quantity = sizeElement.GetDecimal(),
-                        TickType = TickType.Trade
-                    };
+                        // This is trade data
+                        data = new Tick
+                        {
+                            Symbol = leanSymbol,
+                            Time = timestamp,
+                            Value = priceElement.GetDecimal(),
+                            Quantity = sizeElement.GetDecimal(),
+                            TickType = TickType.Trade
+                        };
+                    }
+                    else if (root.TryGetProperty("open", out var openElement) &&
+                             root.TryGetProperty("high", out var highElement) &&
+                             root.TryGetProperty("low", out var lowElement) &&
+                             root.TryGetProperty("close", out var closeElement) &&
+                             root.TryGetProperty("volume", out var volumeElement))
+                    {
+                        // This is OHLCV bar data
+                        data = new TradeBar
+                        {
+                            Symbol = leanSymbol,
+                            Time = timestamp,
+                            Open = openElement.GetDecimal(),
+                            High = highElement.GetDecimal(),
+                            Low = lowElement.GetDecimal(),
+                            Close = closeElement.GetDecimal(),
+                            Volume = volumeElement.GetDecimal()
+                        };
+                    }
                 }
-                else if (root.TryGetProperty("open", out var openElement) &&
-                         root.TryGetProperty("high", out var highElement) &&
-                         root.TryGetProperty("low", out var lowElement) &&
-                         root.TryGetProperty("close", out var closeElement) &&
-                         root.TryGetProperty("volume", out var volumeElement))
+                else if (subscription.tickType == TickType.Quote)
                 {
-                    // This is OHLCV bar data
-                    data = new DataBentoDataType
+                    if (root.TryGetProperty("bid_px_00", out var bidPriceElement) &&
+                        root.TryGetProperty("ask_px_00", out var askPriceElement) &&
+                        root.TryGetProperty("bid_sz_00", out var bidSizeElement) &&
+                        root.TryGetProperty("ask_sz_00", out var askSizeElement))
                     {
-                        Symbol = leanSymbol,
-                        Time = timestamp,
-                        Open = openElement.GetDecimal(),
-                        High = highElement.GetDecimal(),
-                        Low = lowElement.GetDecimal(),
-                        Close = closeElement.GetDecimal(),
-                        Volume = volumeElement.GetDecimal(),
-                        Value = closeElement.GetDecimal()
-                    };
+                        var bidPrice = bidPriceElement.GetInt64() * PriceScaleFactor;
+                        var askPrice = askPriceElement.GetInt64() * PriceScaleFactor;
+
+                        if (subscription.resolution == Resolution.Tick)
+                        {
+                            data = new Tick
+                            {
+                                Time = timestamp,
+                                Symbol = leanSymbol,
+                                AskPrice = askPrice,
+                                BidPrice = bidPrice,
+                                AskSize = askSizeElement.GetInt32(),
+                                BidSize = bidSizeElement.GetInt32(),
+                                TickType = TickType.Quote
+                            };
+                        }
+                        else
+                        {
+                            var bidBar = new Bar(bidPrice, bidPrice, bidPrice, bidPrice);
+                            var askBar = new Bar(askPrice, askPrice, askPrice, askPrice);
+                            data = new QuoteBar(
+                                timestamp,
+                                leanSymbol,
+                                bidBar,
+                                bidSizeElement.GetInt32(),
+                                askBar,
+                                askSizeElement.GetInt32()
+                            );
+                        }
+                    }
                 }
 
                 if (data != null)
@@ -464,25 +509,31 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
-        /// Gets the DataBento schema from LEAN resolution
+        /// Pick Databento schema from Lean resolution/ticktype
         /// </summary>
-        private string GetSchemaFromResolution(Resolution resolution)
+        private string GetSchema(Resolution resolution, TickType tickType)
         {
-            switch (resolution)
+            if (tickType == TickType.Trade)
             {
-                case Resolution.Tick:
+                if (resolution == Resolution.Tick)
                     return "trades";
-                case Resolution.Second:
+                if (resolution == Resolution.Second)
                     return "ohlcv-1s";
-                case Resolution.Minute:
+                if (resolution == Resolution.Minute)
                     return "ohlcv-1m";
-                case Resolution.Hour:
+                if (resolution == Resolution.Hour)
                     return "ohlcv-1h";
-                case Resolution.Daily:
+                if (resolution == Resolution.Daily)
                     return "ohlcv-1d";
-                default:
-                    throw new ArgumentException($"Unsupported resolution: {resolution}");
             }
+            else if (tickType == TickType.Quote)
+            {
+                // top of book
+                if (resolution == Resolution.Tick || resolution == Resolution.Second || resolution == Resolution.Minute || resolution == Resolution.Hour || resolution == Resolution.Daily)
+                    return "mbp-1";
+            }
+
+            throw new NotSupportedException($"Unsupported resolution {resolution} / {tickType}");
         }
 
         /// <summary>
