@@ -21,19 +21,20 @@ using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Lean.DataSource.DataBento;
 using QuantConnect.Logging;
+using QuantConnect.Configuration;
 
-namespace QuantConnect.DataLibrary.Tests
+namespace QuantConnect.Lean.DataSource.DataBento.Tests
 {
     [TestFixture]
     public class DataBentoDataDownloaderTests
     {
         private DataBentoDataDownloader _downloader;
+        private readonly string _apiKey = Config.Get("databento-api-key");
 
         [SetUp]
         public void SetUp()
         {
-            TestSetup.GlobalSetup();
-            _downloader = new DataBentoDataDownloader();
+            _downloader = new DataBentoDataDownloader(_apiKey);
         }
 
         [TearDown]
@@ -98,21 +99,12 @@ namespace QuantConnect.DataLibrary.Tests
                     Assert.Greater(tick.Value, 0, "Tick value should be positive");
                     Assert.GreaterOrEqual(tick.Quantity, 0, "Tick quantity should be non-negative");
                 }
-                else if (data is DataBentoDataType dataBentoData)
-                {
-                    Assert.Greater(dataBentoData.Close, 0, "DataBento close price should be positive");
-                    Assert.GreaterOrEqual(dataBentoData.Volume, 0, "DataBento volume should be non-negative");
-                    Assert.Greater(dataBentoData.High, 0, "DataBento high price should be positive");
-                    Assert.Greater(dataBentoData.Low, 0, "DataBento low price should be positive");
-                    Assert.Greater(dataBentoData.Open, 0, "DataBento open price should be positive");
-                    Assert.IsNotNull(dataBentoData.RawSymbol, "RawSymbol should not be null");
-                }
             }
         }
 
         [Test]
-        [TestCase("ZNM3", SecurityType.Future, Market.CBOT, Resolution.Daily, TickType.Trade)]
-        [TestCase("ZNM3", SecurityType.Future, Market.CBOT, Resolution.Hour, TickType.Trade)]
+        [TestCase("ZNM3", SecurityType.Future, Market.CME, Resolution.Daily, TickType.Trade)]
+        [TestCase("ZNM3", SecurityType.Future, Market.CME, Resolution.Hour, TickType.Trade)]
         [Explicit("This test requires a configured DataBento API key")]
         public void DownloadsFuturesHistoricalData(string ticker, SecurityType securityType, string market, Resolution resolution, TickType tickType)
         {
@@ -176,7 +168,7 @@ namespace QuantConnect.DataLibrary.Tests
             for (int i = 1; i < downloadResponse.Count; i++)
             {
                 Assert.GreaterOrEqual(downloadResponse[i].Time, downloadResponse[i - 1].Time,
-                    $"Data should be sorted by time. Item {i} time {downloadResponse[i].Time} should be >= item {i-1} time {downloadResponse[i-1].Time}");
+                    $"Data should be sorted by time. Item {i} time {downloadResponse[i].Time} should be >= item {i - 1} time {downloadResponse[i - 1].Time}");
             }
         }
 

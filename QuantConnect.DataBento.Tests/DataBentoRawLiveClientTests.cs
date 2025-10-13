@@ -24,23 +24,18 @@ using QuantConnect.Lean.DataSource.DataBento;
 using QuantConnect.Logging;
 using QuantConnect.Configuration;
 
-namespace QuantConnect.DataLibrary.Tests
+namespace QuantConnect.Lean.DataSource.DataBento.Tests
 {
     [TestFixture]
     public class DataBentoRawLiveClientTests
     {
         private DatabentoRawClient _client;
-        private string _apiKey;
+        private readonly string _apiKey = Config.Get("databento-api-key");
 
         [SetUp]
         public void SetUp()
         {
-            TestSetup.GlobalSetup();
-            _apiKey = Config.Get("databento-api-key");
-            if (!string.IsNullOrEmpty(_apiKey))
-            {
-                _client = new DatabentoRawClient(_apiKey);
-            }
+            _client = new DatabentoRawClient(_apiKey);
         }
 
         [TearDown]
@@ -81,7 +76,7 @@ namespace QuantConnect.DataLibrary.Tests
             Assert.IsTrue(connected, "Must be connected to test subscription");
 
             var symbol = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-            var subscribed = await _client.Subscribe(symbol, Resolution.Minute);
+            var subscribed = _client.Subscribe(symbol, Resolution.Minute, TickType.Trade);
 
             Assert.IsTrue(subscribed, "Should successfully subscribe to symbol");
 
@@ -90,7 +85,7 @@ namespace QuantConnect.DataLibrary.Tests
             // Wait a moment to ensure subscription is active
             await Task.Delay(2000);
 
-            var unsubscribed = await _client.Unsubscribe(symbol);
+            var unsubscribed = _client.Unsubscribe(symbol);
             Assert.IsTrue(unsubscribed, "Should successfully unsubscribe from symbol");
 
             Log.Trace($"Successfully unsubscribed from {symbol}");
@@ -122,7 +117,7 @@ namespace QuantConnect.DataLibrary.Tests
             Assert.IsTrue(connected, "Must be connected to test data reception");
 
             var symbol = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-            var subscribed = await _client.Subscribe(symbol, Resolution.Tick);
+            var subscribed = _client.Subscribe(symbol, Resolution.Tick, TickType.Trade);
             Assert.IsTrue(subscribed, "Must be subscribed to receive data");
 
             // Wait for data with timeout
@@ -143,7 +138,7 @@ namespace QuantConnect.DataLibrary.Tests
                 Log.Trace("No data received within timeout period - this may be expected during non-market hours");
             }
 
-            await _client.Unsubscribe(symbol);
+            _client.Unsubscribe(symbol);
         }
 
         [Test]
@@ -196,7 +191,7 @@ namespace QuantConnect.DataLibrary.Tests
         [Test]
         public void DisposesCorrectly()
         {
-            var client = new DatabentoRawClient("test-api-key");
+            var client = new DatabentoRawClient(_apiKey);
             Assert.DoesNotThrow(() => client.Dispose(), "Dispose should not throw");
             Assert.DoesNotThrow(() => client.Dispose(), "Multiple dispose calls should not throw");
         }
@@ -215,8 +210,8 @@ namespace QuantConnect.DataLibrary.Tests
                     var connected = await _client.ConnectAsync();
                     if (connected)
                     {
-                        await _client.Subscribe(esFuture, Resolution.Minute);
-                        await _client.Unsubscribe(esFuture);
+                        _client.Subscribe(esFuture, Resolution.Minute, TickType.Trade);
+                        _client.Unsubscribe(esFuture);
                     }
                 }
             });
@@ -236,20 +231,20 @@ namespace QuantConnect.DataLibrary.Tests
                     if (connected)
                     {
                         // Test different resolutions
-                        await _client.Subscribe(symbol, Resolution.Tick);
-                        await _client.Unsubscribe(symbol);
+                        _client.Subscribe(symbol, Resolution.Tick, TickType.Trade);
+                        _client.Unsubscribe(symbol);
 
-                        await _client.Subscribe(symbol, Resolution.Second);
-                        await _client.Unsubscribe(symbol);
+                        _client.Subscribe(symbol, Resolution.Second, TickType.Trade);
+                        _client.Unsubscribe(symbol);
 
-                        await _client.Subscribe(symbol, Resolution.Minute);
-                        await _client.Unsubscribe(symbol);
+                        _client.Subscribe(symbol, Resolution.Minute, TickType.Trade);
+                        _client.Unsubscribe(symbol);
 
-                        await _client.Subscribe(symbol, Resolution.Hour);
-                        await _client.Unsubscribe(symbol);
+                        _client.Subscribe(symbol, Resolution.Hour, TickType.Trade);
+                        _client.Unsubscribe(symbol);
 
-                        await _client.Subscribe(symbol, Resolution.Daily);
-                        await _client.Unsubscribe(symbol);
+                        _client.Subscribe(symbol, Resolution.Daily, TickType.Trade);
+                        _client.Unsubscribe(symbol);
                     }
                 }
             });

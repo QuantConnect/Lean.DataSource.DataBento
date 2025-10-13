@@ -24,7 +24,7 @@
     <Using Include="NUnit.Framework.Legacy.ClassicAssert" Alias="Assert" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\QuantConnect.DataBento\QuantConnect.DataBento.csproj" />
+    <ProjectReference Include="..\QuantConnect.DataBento\QuantConnect.DataSource.DataBento.csproj" />
     <ProjectReference Include="..\..\Lean\Tests\QuantConnect.Tests.csproj" />
   </ItemGroup>
   <ItemGroup>

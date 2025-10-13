@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
  *
@@ -19,6 +19,8 @@ using QuantConnect.Util;
 using QuantConnect.Orders;
 using QuantConnect.Algorithm;
 using QuantConnect.DataSource;
+using QuantConnect.Data.Market;
+using QuantConnect.Securities.Future;
 
 namespace QuantConnect.DataLibrary.Tests
 {
@@ -27,18 +29,18 @@ namespace QuantConnect.DataLibrary.Tests
     /// </summary>
     public class CustomDataAlgorithm : QCAlgorithm
     {
-        private Symbol _customDataSymbol;
-        private Symbol _equitySymbol;
+        private Future _esFuture;
 
         /// <summary>
         /// Initialise the data and resolution required, as well as the cash and start-end dates for your algorithm. All algorithms must initialized.
         /// </summary>
         public override void Initialize()
         {
-            SetStartDate(2013, 10, 07);  //Set Start Date
-            SetEndDate(2013, 10, 11);    //Set End Date
-            _equitySymbol = AddEquity("SPY").Symbol;
-            _customDataSymbol = AddData<DataBentoDataType>(_equitySymbol).Symbol;
+            SetStartDate(2021, 10, 07);  //Set Start Date
+            SetEndDate(2021, 10, 11);    //Set End Date
+            _esFuture = AddFuture("ES");
+
+            _esFuture.SetFilter(0, 182);
         }
 
         /// <summary>
@@ -47,18 +49,9 @@ namespace QuantConnect.DataLibrary.Tests
         /// <param name="slice">Slice object keyed by symbol containing the stock data</param>
         public override void OnData(Slice slice)
         {
-            var data = slice.Get<DataBentoDataType>();
-            if (!data.IsNullOrEmpty())
+            if (!Portfolio.Invested)
             {
-                // based on the custom data property we will buy or short the underlying equity
-                if (data[_customDataSymbol].SomeCustomProperty == "buy")
-                {
-                    SetHoldings(_equitySymbol, 1);
-                }
-                else if (data[_customDataSymbol].SomeCustomProperty == "sell")
-                {
-                    SetHoldings(_equitySymbol, -1);
-                }
+                SetHoldings(_esFuture.Symbol, 1);
             }
         }
 

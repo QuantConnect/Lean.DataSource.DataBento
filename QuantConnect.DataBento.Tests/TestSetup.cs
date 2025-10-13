@@ -4,6 +4,7 @@
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
+ *
  * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
@@ -11,39 +12,30 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- *
 */
 
 using System;
+using System.Collections;
 using System.IO;
 using NUnit.Framework;
-using System.Collections;
-using QuantConnect.Logging;
 using QuantConnect.Configuration;
+using QuantConnect.Logging;
 
-namespace QuantConnect.DataLibrary.Tests
+namespace QuantConnect.Lean.DataSource.DataBento.Tests
 {
-    [TestFixture]
+    [SetUpFixture]
     public class TestSetup
     {
-        [Test, TestCaseSource(nameof(TestParameters))]
-        public void TestSetupCase()
+        [OneTimeSetUp]
+        public void GlobalSetup()
         {
-        }
-
-        /// <summary>
-        /// Global test setup method that should be called by all DataBento tests
-        /// </summary>
-        public static void GlobalSetup()
-        {
+            Log.DebuggingEnabled = true;
             Log.LogHandler = new CompositeLogHandler();
-            Log.Trace("DataBento TestSetup.GlobalSetup(): starting...");
+            Log.Trace("TestSetup(): starting...");
             ReloadConfiguration();
-            Log.DebuggingEnabled = Config.GetBool("debug-mode");
-            Log.Trace("DataBento TestSetup.GlobalSetup(): completed");
         }
 
-        public static void ReloadConfiguration()
+        private static void ReloadConfiguration()
         {
             // nunit 3 sets the current folder to a temp folder we need it to be the test bin output folder
             var dir = TestContext.CurrentContext.TestDirectory;
@@ -62,7 +54,7 @@ namespace QuantConnect.DataLibrary.Tests
                 {
                     var key = envKey.Substring(3).Replace("_", "-").ToLower();
 
-                    Log.Trace($"DataBento TestSetup(): Updating config setting '{key}' from environment var '{envKey}'");
+                    Log.Trace($"TestSetup(): Updating config setting '{key}' from environment var '{envKey}'");
                     Config.Set(key, value);
                 }
             }
@@ -73,7 +65,10 @@ namespace QuantConnect.DataLibrary.Tests
 
         private static void SetUp()
         {
-            GlobalSetup();
+            Log.LogHandler = new CompositeLogHandler();
+            Log.Trace("TestSetup(): starting...");
+            ReloadConfiguration();
+            Log.DebuggingEnabled = Config.GetBool("debug-mode");
         }
 
         private static TestCaseData[] TestParameters
@@ -81,7 +76,7 @@ namespace QuantConnect.DataLibrary.Tests
             get
             {
                 SetUp();
-                return new[] { new TestCaseData() };
+                return new [] { new TestCaseData() };
             }
         }
     }

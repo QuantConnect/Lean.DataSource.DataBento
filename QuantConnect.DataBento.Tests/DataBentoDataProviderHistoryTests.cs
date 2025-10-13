@@ -19,24 +19,25 @@ using System.Linq;
 using NUnit.Framework;
 using QuantConnect.Data;
 using QuantConnect.Util;
-using QuantConnect.Tests;
 using QuantConnect.Lean.DataSource.DataBento;
 using QuantConnect.Securities;
 using System.Collections.Generic;
 using QuantConnect.Logging;
+using QuantConnect.Data.Market;
+using QuantConnect.Configuration;
 
-namespace QuantConnect.DataLibrary.Tests
+namespace QuantConnect.Lean.DataSource.DataBento.Tests
 {
     [TestFixture]
     public class DataBentoDataProviderHistoryTests
     {
         private DataBentoProvider _historyDataProvider;
+        private readonly string _apiKey = Config.Get("databento-api-key");
 
         [SetUp]
         public void SetUp()
         {
-            TestSetup.GlobalSetup();
-            _historyDataProvider = new DataBentoProvider();
+            _historyDataProvider = new DataBentoProvider(_apiKey);
         }
 
         [TearDown]
@@ -49,12 +50,11 @@ namespace QuantConnect.DataLibrary.Tests
         {
             get
             {
-                TestGlobals.Initialize();
 
                 // DataBento futures
                 var esMini = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-                var znNote = Symbol.Create("ZNM3", SecurityType.Future, Market.CBOT);
-                var gcGold = Symbol.Create("GCM3", SecurityType.Future, Market.COMEX);
+                var znNote = Symbol.Create("ZNM3", SecurityType.Future, Market.CME);
+                var gcGold = Symbol.Create("GCM3", SecurityType.Future, Market.CME);
 
                 // test cases for supported futures
                 yield return new TestCaseData(esMini, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(5), false)
@@ -104,7 +104,7 @@ namespace QuantConnect.DataLibrary.Tests
 
             try
             {
-                var slices = _historyDataProvider.GetHistory(new[] { request }, TimeZones.Utc)?.ToList();
+                var slices = _historyDataProvider.GetHistory(request)?.Select(data => new Slice(data.Time, new[] { data }, data.Time.ConvertToUtc(request.DataTimeZone))).ToList();
 
                 if (expectsNoData)
                 {
@@ -151,12 +151,22 @@ namespace QuantConnect.DataLibrary.Tests
         public void GetHistoryWithMultipleSymbols()
         {
             var symbol1 = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-            var symbol2 = Symbol.Create("ZNM3", SecurityType.Future, Market.CBOT);
+            var symbol2 = Symbol.Create("ZNM3", SecurityType.Future, Market.CME);
 
             var request1 = GetHistoryRequest(Resolution.Daily, TickType.Trade, symbol1, TimeSpan.FromDays(3));
             var request2 = GetHistoryRequest(Resolution.Daily, TickType.Trade, symbol2, TimeSpan.FromDays(3));
 
-            var slices = _historyDataProvider.GetHistory(new[] { request1, request2 }, TimeZones.Utc)?.ToList();
+            var history1 = _historyDataProvider.GetHistory(request1);
+            var history2 = _historyDataProvider.GetHistory(request2);
+
+            var allData = new List<BaseData>();
+            if (history1 != null) allData.AddRange(history1);
+            if (history2 != null) allData.AddRange(history2);
+
+            // timezone from the first request
+            var slices = allData.GroupBy(d => d.Time)
+                .Select(g => new Slice(g.Key, g.ToList(), g.Key.ConvertToUtc(request1.DataTimeZone)))
+                .ToList();
 
             Assert.IsNotNull(slices, "Expected to receive history data for multiple symbols");
 

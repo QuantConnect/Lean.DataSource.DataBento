@@ -24,55 +24,5 @@ namespace QuantConnect.Algorithm.CSharp
     /// Example algorithm using the custom data type as a source of alpha
     /// </summary>
     public class CustomDataUniverse : QCAlgorithm
-    {
-        /// <summary>
-        /// Initialise the data and resolution required, as well as the cash and start-end dates for your algorithm. All algorithms must initialized.
-        /// </summary>
-        public override void Initialize()
-        {
-            // Data ADDED via universe selection is added with Daily resolution.
-            UniverseSettings.Resolution = Resolution.Daily;
-
-            SetStartDate(2022, 2, 14);
-            SetEndDate(2022, 2, 18);
-            SetCash(100000);
-
-            // add a custom universe data source (defaults to usa-equity)
-            var universe = AddUniverse<DataBentoDataUniverse>(data =>
-            {
-                foreach (DataBentoDataUniverse datum in data)
-                {
-                    Log($"{datum.Symbol},{datum.SomeCustomProperty},{datum.SomeNumericProperty}");
-                }
-
-                // define our selection criteria
-                return from DataBentoDataUniverse d in data
-                       where d.SomeCustomProperty == "buy"
-                       select d.Symbol;
-            });
-
-            var history = History(universe, 1).ToList();
-            if (history.Count != 1)
-            {
-                throw new System.Exception($"Unexpected historical data count!");
-            }
-            foreach (var dataForDate in history)
-            {
-                var coarseData = dataForDate.ToList();
-                if (coarseData.Count < 300)
-                {
-                    throw new System.Exception($"Unexpected historical universe data!");
-                }
-            }
-        }
-
-        /// <summary>
-        /// Event fired each time that we add/remove securities from the data feed
-        /// </summary>
-        /// <param name="changes">Security additions/removals for this time step</param>
-        public override void OnSecuritiesChanged(SecurityChanges changes)
-        {
-            Log(changes.ToString());
-        }
-    }
+    { }
 }

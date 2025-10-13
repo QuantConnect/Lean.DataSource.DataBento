@@ -26,22 +26,21 @@ using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Util;
 using QuantConnect.Configuration;
+using QuantConnect.Interfaces;
+using QuantConnect.Securities;
 
 namespace QuantConnect.Lean.DataSource.DataBento
 {
     /// <summary>
     /// Data downloader class for pulling data from Data Provider
     /// </summary>
-    public class DataBentoDataDownloader : IDataProvider
+    public class DataBentoDataDownloader : IDataDownloader, IDisposable
     {
         /// <inheritdoc cref="HttpClient"/>
         private readonly HttpClient _httpClient;
 
-        /// <inheritdoc cref="DataBentoProvider"/>
-        private readonly DataBentoProvider _DataBentoProvider;
+        private readonly string _apiKey;
 
-        /// <inheritdoc cref="MarketHoursDatabase" />
-        private readonly MarketHoursDatabase _marketHoursDatabase;
         private const decimal PriceScaleFactor = 1e-9m;
 
         /// <summary>
@@ -49,9 +48,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         public DataBentoDataDownloader(string apiKey)
         {
+            _apiKey = apiKey;
             _httpClient = new HttpClient();
-            _DataBentoProvider = new DataBentoProvider(apiKey);
-            _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
         }
 
         public DataBentoDataDownloader()
@@ -95,8 +93,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
             };
 
             // Add API key authentication
-            var apiKey = Config.Get("databento-api-key");
-            request.Headers.Add("Authorization", $"Bearer {apiKey}");
+            request.Headers.Add("Authorization", $"Bearer {_apiKey}");
 
             // send the request with the get range url
             var response = _httpClient.Send(request);
@@ -177,7 +174,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         public void Dispose()
         {
-            _DataBentoProvider?.DisposeSafely();
+            _httpClient?.DisposeSafely();
         }
 
         /// <summary>
@@ -221,8 +218,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
             return symbol.Value;
         }
 
-
         /// Class for parsing trade data from Databento
+        /// Really used as a map from the http request to then get it in QC data structures
         private class DatabentoBar
         {
             public DateTime Timestamp { get; set; }

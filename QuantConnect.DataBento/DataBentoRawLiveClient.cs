@@ -36,8 +36,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
     {
         private readonly string _apiKey;
         private readonly string _gateway;
-        private TcpClient _tcpClient;
-        private NetworkStream _stream;
+        private TcpClient? _tcpClient;
+        private NetworkStream? _stream;
         private CancellationTokenSource _cancellationTokenSource;
         private readonly ConcurrentDictionary<Symbol, (Resolution, TickType)> _subscriptions;
         private readonly object _connectionLock = new object();
@@ -48,12 +48,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Event fired when new data is received
         /// </summary>
-        public event EventHandler<BaseData> DataReceived;
+        public event EventHandler<BaseData>? DataReceived;
 
         /// <summary>
         /// Event fired when connection status changes
         /// </summary>
-        public event EventHandler<bool> ConnectionStatusChanged;
+        public event EventHandler<bool>? ConnectionStatusChanged;
 
         /// <summary>
         /// Gets whether the client is currently connected
@@ -64,7 +64,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// Initializes a new instance of the DatabentoRawClient
         /// </summary>
         /// <param name="apiKey">DataBento API key</param>
-        /// <param name="gateway">Gateway address defaultfor futures glbx-mdp3.lsg.databento.com:13000</param>
+        /// <param name="gateway">Gateway address default for futures glbx-mdp3.lsg.databento.com:13000</param>
         public DatabentoRawClient(string apiKey, string gateway = "glbx-mdp3.lsg.databento.com:13000")
         {
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
@@ -78,39 +78,38 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         public async Task<bool> ConnectAsync()
         {
-            lock (_connectionLock)
+            if (_isConnected || _disposed)
             {
-                if (_isConnected || _disposed)
-                    return _isConnected;
+                return _isConnected;
+            }
 
-                try
+            try
+            {
+                var parts = _gateway.Split(':');
+                var host = parts[0];
+                var port = parts.Length > 1 ? int.Parse(parts[1]) : 13000;
+
+                _tcpClient = new TcpClient();
+                await _tcpClient.ConnectAsync(host, port).ConfigureAwait(false);
+                _stream = _tcpClient.GetStream();
+
+                // Send authentication
+                if (await AuthenticateAsync().ConfigureAwait(false))
                 {
-                    var parts = _gateway.Split(':');
-                    var host = parts[0];
-                    var port = parts.Length > 1 ? int.Parse(parts[1]) : 13000;
+                    _isConnected = true;
+                    ConnectionStatusChanged?.Invoke(this, true);
 
-                    _tcpClient = new TcpClient();
-                    _tcpClient.Connect(host, port);
-                    _stream = _tcpClient.GetStream();
+                    // Start message processing task
+                    _ = Task.Run(() => ProcessMessagesAsync(_cancellationTokenSource.Token));
 
-                    // Send authentication
-                    if (AuthenticateAsync().Result)
-                    {
-                        _isConnected = true;
-                        ConnectionStatusChanged?.Invoke(this, true);
-
-                        // Start message processing task
-                        Task.Run(() => ProcessMessagesAsync(_cancellationTokenSource.Token));
-
-                        Log.Debug("DatabentoRawClient.ConnectAsync(): Connected to DataBento live gateway");
-                        return true;
-                    }
+                    Log.Debug("DatabentoRawClient.ConnectAsync(): Connected to DataBento live gateway");
+                    return true;
                 }
-                catch (Exception ex)
-                {
-                    Log.Error($"DatabentoRawClient.ConnectAsync(): Failed to connect: {ex.Message}");
-                    Disconnect();
-                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"DatabentoRawClient.ConnectAsync(): Failed to connect: {ex.Message}");
+                Disconnect();
             }
 
             return false;
@@ -121,6 +120,9 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private async Task<bool> AuthenticateAsync()
         {
+            if (_stream == null)
+                return false;
+
             try
             {
                 // DataBento authentication message format
@@ -168,7 +170,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <param name="tickType">The tick type</param>
         public bool Subscribe(Symbol symbol, Resolution resolution, TickType tickType)
         {
-            if (!IsConnected)
+            if (!IsConnected || _stream == null)
             {
                 Log.Error("DatabentoRawClient.Subscribe(): Not connected to gateway");
                 return false;
@@ -212,7 +214,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <param name="symbol">Symbol to unsubscribe from</param>
         public bool Unsubscribe(Symbol symbol)
         {
-            if (!IsConnected)
+            if (!IsConnected || _stream == null)
                 return false;
 
             try
@@ -248,6 +250,9 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private async Task ProcessMessagesAsync(CancellationToken cancellationToken)
         {
+            if (_stream == null)
+                return;
+
             var buffer = new byte[8192];
             var messageBuffer = new StringBuilder();
 
@@ -267,7 +272,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                         var receivedData = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                         messageBuffer.Append(receivedData);
 
-                        // Process complete messages (assuming newline-delimited JSON)
+                        // Process complete messages
                         string messageContent = messageBuffer.ToString();
                         var messages = messageContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
                         
@@ -324,7 +329,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 switch (msgType)
                 {
                     case "heartbeat":
-                        // Handle heartbeat - no action needed
+                        // Handle heartbeat 
                         break;
                         
                     case "error":
@@ -379,6 +384,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private async Task HandleDataMessage(JsonElement root)
         {
+            await Task.CompletedTask;
+
             try
             {
                 // Extract common fields
@@ -390,10 +397,14 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 var databentoSymbol = symbolElement.GetString();
                 var timestampNs = timestampElement.GetInt64();
-                var timestamp = DateTimeOffset.FromUnixTimeNanoseconds(timestampNs).DateTime;
+                
+                // Manual conversion from nanoseconds to DateTime
+                // Unix epoch: January 1, 1970 00:00:00 UTC
+                var unixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                var timestamp = unixEpoch.AddTicks(timestampNs / 100); // Convert nanoseconds to ticks (100ns per tick)
 
                 // Find the corresponding LEAN symbol
-                Symbol leanSymbol = null;
+                Symbol? leanSymbol = null;
                 (Resolution resolution, TickType tickType) subscription = default;
                 foreach (var kvp in _subscriptions)
                 {
@@ -408,7 +419,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 if (leanSymbol == null)
                     return;
 
-                BaseData data = null;
+                BaseData? data = null;
 
                 // Check if this is trade data or quote data based on available fields
                 if (subscription.tickType == TickType.Trade)
