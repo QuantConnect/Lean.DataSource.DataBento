@@ -583,7 +583,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         {
             if (symbol.SecurityType == SecurityType.Future)
             {
-                return $"{symbol.ID.Symbol}.v.0"; // Continuous contract
+                return $"{symbol.ID.Symbol}.c.0"; // Continuous contract
             }
             
             return symbol.Value;
