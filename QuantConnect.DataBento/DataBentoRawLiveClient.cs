@@ -18,6 +18,7 @@ using System;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -116,7 +117,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
-        /// Authenticates with the DataBento gateway
+        /// Authenticates with the DataBento gateway using CRAM
         /// </summary>
         private async Task<bool> AuthenticateAsync()
         {
@@ -125,35 +126,104 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             try
             {
-                // DataBento authentication message format
-                var authMessage = new
-                {
-                    msg_type = "authenticate",
-                    api_key = _apiKey,
-                    version = "1.0"
-                };
-
-                var authJson = JsonSerializer.Serialize(authMessage);
-                var authBytes = Encoding.UTF8.GetBytes(authJson + "\n");
-
-                await _stream.WriteAsync(authBytes, 0, authBytes.Length);
-                await _stream.FlushAsync();
-
-                // Read authentication response
+                // Read greeting and challenge from gateway
                 var responseBuffer = new byte[1024];
-                var bytesRead = await _stream.ReadAsync(responseBuffer, 0, responseBuffer.Length);
-                var response = Encoding.UTF8.GetString(responseBuffer, 0, bytesRead);
-
-                Log.Debug($"DatabentoRawClient.AuthenticateAsync(): Auth response: {response}");
-
-                // Parse response to check if authentication was successful
-                var responseDoc = JsonDocument.Parse(response.Trim());
-                if (responseDoc.RootElement.TryGetProperty("success", out var successElement))
+                var messageBuffer = new StringBuilder();
+                
+                // Read until we have both the version and cram messages
+                string? version = null;
+                string? cram = null;
+                
+                while (version == null || cram == null)
                 {
-                    return successElement.GetBoolean();
+                    var authenticationBytesRead = await _stream.ReadAsync(responseBuffer, 0, responseBuffer.Length);
+                    if (authenticationBytesRead == 0)
+                    {
+                        Log.Error("DatabentoRawClient.AuthenticateAsync(): Connection closed during authentication");
+                        return false;
+                    }
+                    
+                    var receivedData = Encoding.UTF8.GetString(responseBuffer, 0, authenticationBytesRead);
+                    messageBuffer.Append(receivedData);
+                    
+                    var messages = messageBuffer.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    
+                    foreach (var msg in messages)
+                    {
+                        if (msg.StartsWith("lsg_version="))
+                        {
+                            version = msg.Substring("lsg_version=".Length);
+                            Log.Debug($"DatabentoRawClient.AuthenticateAsync(): Gateway version: {version}");
+                        }
+                        else if (msg.StartsWith("cram="))
+                        {
+                            cram = msg.Substring("cram=".Length);
+                            Log.Debug($"DatabentoRawClient.AuthenticateAsync(): Received CRAM challenge");
+                        }
+                    }
                 }
 
-                return response.Contains("success") || response.Contains("authenticated");
+                if (string.IsNullOrEmpty(cram))
+                {
+                    Log.Error("DatabentoRawClient.AuthenticateAsync(): No CRAM challenge received");
+                    return false;
+                }
+                
+                // Generate authentication response
+                // Concatenate cram and API key: $cram|$key
+                var cramAndKey = $"{cram}|{_apiKey}";
+                
+                // Hash with SHA-256
+                string authHash;
+                using (var sha256 = SHA256.Create())
+                {
+                    var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(cramAndKey));
+                    authHash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+                }
+                
+                // Get last 5 characters of API key (bucket_id)
+                var bucketId = _apiKey.Substring(_apiKey.Length - 5);
+                
+                // Create auth response: $hash-$bucket_id
+                var authResponse = $"{authHash}-{bucketId}";
+                
+                // Send authentication message
+                // Format: auth=$authResponse|dataset=GLBX.MDP3|encoding=dbn|ts_out=0\n
+                var authMessage = $"auth={authResponse}|dataset=GLBX.MDP3|encoding=dbn|ts_out=0\n";
+                var authBytes = Encoding.UTF8.GetBytes(authMessage);
+                
+                await _stream.WriteAsync(authBytes, 0, authBytes.Length);
+                await _stream.FlushAsync();
+                
+                Log.Debug("DatabentoRawClient.AuthenticateAsync(): Sent authentication message");
+                
+                // Read authentication response
+                messageBuffer.Clear();
+                var bytesRead = await _stream.ReadAsync(responseBuffer, 0, responseBuffer.Length);
+                var response = Encoding.UTF8.GetString(responseBuffer, 0, bytesRead);
+                
+                Log.Debug($"DatabentoRawClient.AuthenticateAsync(): Auth response: {response}");
+                
+                // Check for success response: success=1|session_id=...
+                if (response.Contains("success=1"))
+                {
+                    // Extract session ID if needed
+                    if (response.Contains("session_id="))
+                    {
+                        var sessionIdStart = response.IndexOf("session_id=") + "session_id=".Length;
+                        var sessionIdEnd = response.IndexOf('|', sessionIdStart);
+                        if (sessionIdEnd == -1) sessionIdEnd = response.IndexOf('\n', sessionIdStart);
+                        if (sessionIdEnd > sessionIdStart)
+                        {
+                            var sessionId = response.Substring(sessionIdStart, sessionIdEnd - sessionIdStart);
+                            Log.Debug($"DatabentoRawClient.AuthenticateAsync(): Session ID: {sessionId}");
+                        }
+                    }
+                    return true;
+                }
+                
+                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Authentication failed: {response}");
+                return false;
             }
             catch (Exception ex)
             {
