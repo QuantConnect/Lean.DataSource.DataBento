@@ -16,9 +16,10 @@
 
 using System;
 using System.IO;
-using System.Net.Sockets;
 using System.Text;
+using System.Net.Sockets;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
@@ -78,6 +79,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         public async Task<bool> ConnectAsync()
         {
+            Log.Trace("DatabentoRawClient.ConnectAsync(): Connecting to DataBento live gateway");
             if (_isConnected || _disposed)
             {
                 return _isConnected;
@@ -102,7 +104,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     // Start message processing task
                     _ = Task.Run(() => ProcessMessagesAsync(_cancellationTokenSource.Token));
 
-                    Log.Debug("DatabentoRawClient.ConnectAsync(): Connected to DataBento live gateway");
+                    Log.Trace("DatabentoRawClient.ConnectAsync(): Connected to DataBento live gateway");
                     return true;
                 }
             }
@@ -116,7 +118,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
-        /// Authenticates with the DataBento gateway
+        /// Authenticates with the DataBento gateway using CRAM
         /// </summary>
         private async Task<bool> AuthenticateAsync()
         {
@@ -125,35 +127,104 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             try
             {
-                // DataBento authentication message format
-                var authMessage = new
-                {
-                    msg_type = "authenticate",
-                    api_key = _apiKey,
-                    version = "1.0"
-                };
-
-                var authJson = JsonSerializer.Serialize(authMessage);
-                var authBytes = Encoding.UTF8.GetBytes(authJson + "\n");
-
-                await _stream.WriteAsync(authBytes, 0, authBytes.Length);
-                await _stream.FlushAsync();
-
-                // Read authentication response
+                // Read greeting and challenge from gateway
                 var responseBuffer = new byte[1024];
-                var bytesRead = await _stream.ReadAsync(responseBuffer, 0, responseBuffer.Length);
-                var response = Encoding.UTF8.GetString(responseBuffer, 0, bytesRead);
-
-                Log.Debug($"DatabentoRawClient.AuthenticateAsync(): Auth response: {response}");
-
-                // Parse response to check if authentication was successful
-                var responseDoc = JsonDocument.Parse(response.Trim());
-                if (responseDoc.RootElement.TryGetProperty("success", out var successElement))
+                var messageBuffer = new StringBuilder();
+                
+                // Read until we have both the version and cram messages
+                string? version = null;
+                string? cram = null;
+                
+                while (version == null || cram == null)
                 {
-                    return successElement.GetBoolean();
+                    var authenticationBytesRead = await _stream.ReadAsync(responseBuffer, 0, responseBuffer.Length);
+                    if (authenticationBytesRead == 0)
+                    {
+                        Log.Error("DatabentoRawClient.AuthenticateAsync(): Connection closed during authentication");
+                        return false;
+                    }
+                    
+                    var receivedData = Encoding.UTF8.GetString(responseBuffer, 0, authenticationBytesRead);
+                    messageBuffer.Append(receivedData);
+                    
+                    var messages = messageBuffer.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    
+                    foreach (var msg in messages)
+                    {
+                        if (msg.StartsWith("lsg_version="))
+                        {
+                            version = msg.Substring("lsg_version=".Length);
+                            Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Gateway version: {version}");
+                        }
+                        else if (msg.StartsWith("cram="))
+                        {
+                            cram = msg.Substring("cram=".Length);
+                            Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Received CRAM challenge");
+                        }
+                    }
                 }
 
-                return response.Contains("success") || response.Contains("authenticated");
+                if (string.IsNullOrEmpty(cram))
+                {
+                    Log.Error("DatabentoRawClient.AuthenticateAsync(): No CRAM challenge received");
+                    return false;
+                }
+                
+                // Generate authentication response
+                // Concatenate cram and API key: $cram|$key
+                var cramAndKey = $"{cram}|{_apiKey}";
+                
+                // Hash with SHA-256
+                string authHash;
+                using (var sha256 = SHA256.Create())
+                {
+                    var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(cramAndKey));
+                    authHash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+                }
+                
+                // Get last 5 characters of API key (bucket_id)
+                var bucketId = _apiKey.Substring(_apiKey.Length - 5);
+                
+                // Create auth response: $hash-$bucket_id
+                var authResponse = $"{authHash}-{bucketId}";
+                
+                // Send authentication message
+                // Format: auth=$authResponse|dataset=GLBX.MDP3|encoding=dbn|ts_out=0\n
+                var authMessage = $"auth={authResponse}|dataset=GLBX.MDP3|encoding=json|ts_out=0\n";
+                var authBytes = Encoding.UTF8.GetBytes(authMessage);
+                
+                await _stream.WriteAsync(authBytes, 0, authBytes.Length);
+                await _stream.FlushAsync();
+                
+                Log.Trace("DatabentoRawClient.AuthenticateAsync(): Sent authentication message");
+                
+                // Read authentication response
+                messageBuffer.Clear();
+                var bytesRead = await _stream.ReadAsync(responseBuffer, 0, responseBuffer.Length);
+                var response = Encoding.UTF8.GetString(responseBuffer, 0, bytesRead);
+                
+                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Auth response: {response}");
+                
+                // Check for success response: success=1|session_id=...
+                if (response.Contains("success=1"))
+                {
+                    // Extract session ID if needed
+                    if (response.Contains("session_id="))
+                    {
+                        var sessionIdStart = response.IndexOf("session_id=") + "session_id=".Length;
+                        var sessionIdEnd = response.IndexOf('|', sessionIdStart);
+                        if (sessionIdEnd == -1) sessionIdEnd = response.IndexOf('\n', sessionIdStart);
+                        if (sessionIdEnd > sessionIdStart)
+                        {
+                            var sessionId = response.Substring(sessionIdStart, sessionIdEnd - sessionIdStart);
+                            Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Session ID: {sessionId}");
+                        }
+                    }
+                    return true;
+                }
+                
+                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Authentication failed: {response}");
+                return false;
             }
             catch (Exception ex)
             {
@@ -181,23 +252,14 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 var databentoSymbol = MapSymbolToDataBento(symbol);
                 var schema = GetSchema(resolution, tickType);
 
-                var subscribeMessage = new
-                {
-                    msg_type = "subscribe",
-                    dataset = "GLBX.MDP3", // hard coded for now. Later on can add equities and options with different mapping
-                    schema = schema,
-                    symbols = new[] { databentoSymbol },
-                    stype_in = "continuous"
-                };
-
-                var messageJson = JsonSerializer.Serialize(subscribeMessage);
-                var messageBytes = Encoding.UTF8.GetBytes(messageJson + "\n");
+                var subscribeMessage = $"schema={schema}|stype_in=raw_symbol|symbols={databentoSymbol}\n";
+                var messageBytes = Encoding.UTF8.GetBytes(subscribeMessage);
 
                 _stream.Write(messageBytes, 0, messageBytes.Length);
                 _stream.Flush();
 
                 _subscriptions.TryAdd(symbol, (resolution, tickType));
-                Log.Debug($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} at {resolution} resolution");
+                Log.Trace($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} at {resolution} resolution");
 
                 return true;
             }
@@ -214,27 +276,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <param name="symbol">Symbol to unsubscribe from</param>
         public bool Unsubscribe(Symbol symbol)
         {
-            if (!IsConnected || _stream == null)
-                return false;
-
             try
             {
-                var databentoSymbol = MapSymbolToDataBento(symbol);
-
-                var unsubscribeMessage = new
+                if (_subscriptions.TryRemove(symbol, out _))
                 {
-                    msg_type = "unsubscribe",
-                    symbols = new[] { databentoSymbol }
-                };
-
-                var messageJson = JsonSerializer.Serialize(unsubscribeMessage);
-                var messageBytes = Encoding.UTF8.GetBytes(messageJson + "\n");
-
-                _stream.Write(messageBytes, 0, messageBytes.Length);
-                _stream.Flush();
-
-                _subscriptions.TryRemove(symbol, out _);
-                Log.Debug($"DatabentoRawClient.Unsubscribe(): Unsubscribed from {symbol}");
+                    Log.Trace($"DatabentoRawClient.Unsubscribe(): Unsubscribed from {symbol}");
+                }
 
                 return true;
             }
@@ -250,63 +297,74 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private async Task ProcessMessagesAsync(CancellationToken cancellationToken)
         {
+            Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Starting message processing");
             if (_stream == null)
+            {
+                Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): No stream to process messages");
                 return;
+            }
 
             var buffer = new byte[8192];
             var messageBuffer = new StringBuilder();
+            var messageCount = 0;
 
             try
             {
                 while (!cancellationToken.IsCancellationRequested && IsConnected)
                 {
-                    if (_stream.DataAvailable)
+                    var bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
+                    if (bytesRead == 0)
                     {
-                        var bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
-                        if (bytesRead == 0)
-                        {
-                            Log.Debug("DatabentoRawClient.ProcessMessagesAsync(): Connection closed by server");
-                            break;
-                        }
-
-                        var receivedData = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                        messageBuffer.Append(receivedData);
-
-                        // Process complete messages
-                        string messageContent = messageBuffer.ToString();
-                        var messages = messageContent.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                        
-                        for (int i = 0; i < messages.Length - 1; i++)
-                        {
-                            await ProcessSingleMessage(messages[i]);
-                        }
-
-                        // Keep the last incomplete message in the buffer
-                        if (messageContent.EndsWith('\n'))
-                        {
-                            messageBuffer.Clear();
-                        }
-                        else
-                        {
-                            messageBuffer.Clear().Append(messages[messages.Length - 1]);
-                        }
+                        Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Connection closed by server");
+                        break;
                     }
-                    else
+
+                    Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Read {bytesRead} bytes");
+
+                    var receivedData = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    messageBuffer.Append(receivedData);
+
+                    // Process complete messages
+                    var messageContent = messageBuffer.ToString();
+                    var lastNewlineIndex = messageContent.LastIndexOf('\n');
+
+                    if (lastNewlineIndex > -1)
                     {
-                        await Task.Delay(1, cancellationToken);
+                        var completeMessages = messageContent.Substring(0, lastNewlineIndex);
+                        var messages = completeMessages.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+                        Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Processing {messages.Length} complete messages");
+
+                        foreach (var message in messages)
+                        {
+                            messageCount++;
+                            Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Message #{messageCount}: {message.Substring(0, Math.Min(200, message.Length))}...");
+                            await ProcessSingleMessage(message);
+                        }
+
+                        messageBuffer.Clear();
+                        if (lastNewlineIndex < messageContent.Length - 1)
+                        {
+                            messageBuffer.Append(messageContent.Substring(lastNewlineIndex + 1));
+                        }
                     }
                 }
             }
             catch (OperationCanceledException)
             {
-                Log.Debug("DatabentoRawClient.ProcessMessagesAsync(): Message processing cancelled");
+                Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Message processing cancelled");
+            }
+            catch (IOException ex) when (ex.InnerException is SocketException)
+            {
+                Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Socket exception: {ex.Message}");
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.ProcessMessagesAsync(): Error processing messages: {ex.Message}");
+                Log.Error($"DatabentoRawClient.ProcessMessagesAsync(): Error processing messages: {ex.Message}\n{ex.StackTrace}");
             }
             finally
             {
+                Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Exiting. Total messages processed: {messageCount}");
                 Disconnect();
             }
         }
@@ -316,37 +374,75 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private async Task ProcessSingleMessage(string message)
         {
+            Log.Trace("DatabentoRawClient.ProcessSingleMessage(): Processing message");
+            Log.Trace($"Msg {message}");
             try
             {
-                using var document = JsonDocument.Parse(message);
-                var root = document.RootElement;
-
-                if (!root.TryGetProperty("msg_type", out var msgTypeElement))
-                    return;
-
-                var msgType = msgTypeElement.GetString();
-
-                switch (msgType)
+                // First, try to parse as JSON
+                using (var document = JsonDocument.Parse(message))
                 {
-                    case "heartbeat":
-                        // Handle heartbeat 
-                        break;
-                        
-                    case "error":
-                        HandleErrorMessage(root);
-                        break;
-                        
-                    case "subscription_response":
-                        HandleSubscriptionResponse(root);
-                        break;
-                        
-                    case "data":
-                        await HandleDataMessage(root);
-                        break;
-                        
-                    default:
-                        Log.Debug($"DatabentoRawClient.ProcessSingleMessage(): Unknown message type: {msgType}");
-                        break;
+                    var root = document.RootElement;
+
+                    if (root.TryGetProperty("hd", out var headerElement))
+                    {
+                        // This is a DBN message, let's check rtype
+                        if (headerElement.TryGetProperty("rtype", out var rtypeElement))
+                        {
+                            var rtype = rtypeElement.GetByte();
+                            if (rtype == 21) // Error
+                            {
+                                if (root.TryGetProperty("err", out var errElement))
+                                {
+                                    Log.Error($"Databento error: {errElement.GetString()}");
+                                }
+                                return;
+                            }
+                        }
+                    }
+
+                    if (root.TryGetProperty("msg_type", out var msgTypeElement))
+                    {
+                        var msgType = msgTypeElement.GetString();
+
+                        switch (msgType)
+                        {
+                            case "heartbeat":
+                                // Handle heartbeat 
+                                break;
+
+                            case "error":
+                                HandleErrorMessage(root);
+                                break;
+
+                            case "subscription_response":
+                                HandleSubscriptionResponse(root);
+                                break;
+
+                            case "data":
+                                await HandleDataMessage(root);
+                                break;
+
+                            default:
+                                Log.Trace($"DatabentoRawClient.ProcessSingleMessage(): Unknown message type: {msgType}");
+                                break;
+                        }
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // If it's not a valid JSON
+                if (message.Contains("error") || message.Contains("err"))
+                {
+                    Log.Error($"Databento error: {message}");
+                }
+                else if (message.Contains("success"))
+                {
+                    Log.Trace($"Databento success: {message}");
+                }
+                else
+                {
+                    Log.Trace($"Databento message: {message}");
                 }
             }
             catch (Exception ex)
@@ -375,7 +471,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
             if (root.TryGetProperty("success", out var successElement))
             {
                 var success = successElement.GetBoolean();
-                Log.Debug($"DatabentoRawClient.HandleSubscriptionResponse(): Subscription response: {success}");
+                Log.Trace($"DatabentoRawClient.HandleSubscriptionResponse(): Subscription response: {success}");
             }
         }
 
@@ -384,6 +480,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private async Task HandleDataMessage(JsonElement root)
         {
+            Log.Trace($"DatabentoRawClient.HandleDataMessage(): Processing data message: {root}");
             await Task.CompletedTask;
 
             try
@@ -417,7 +514,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 }
 
                 if (leanSymbol == null)
+                {
+                    Log.Trace($"DatabentoRawClient.HandleDataMessage(): Received data for unsubscribed symbol: {databentoSymbol}");
                     return;
+                }
 
                 BaseData? data = null;
 
@@ -513,10 +613,84 @@ namespace QuantConnect.Lean.DataSource.DataBento
         {
             if (symbol.SecurityType == SecurityType.Future)
             {
-                return $"{symbol.ID.Symbol}.c.0"; // Continuous contract
+                // symbol.Value contains the full contract identifier (e.g., ES19Z25)
+                var contractSymbol = symbol.Value;
+                
+                Log.Trace($"Original symbol: {contractSymbol}");
+                
+                // Convert LEAN futures format to Databento format
+                // LEAN format: ES19Z25 (root + day + month code + year)
+                // Databento format: ESZ25 (root + month code + year)
+                
+                var databentoSymbol = ConvertToDatabentoFormat(contractSymbol);
+                
+                Log.Trace($"Databento symbol: {databentoSymbol}");
+                return databentoSymbol;
+            }
+            else
+            {
+                Log.Error($"DatabentoRawClient.MapSymbolToDataBento(): Unsupported symbol type: {symbol.SecurityType}");
+                return "";
+            }
+        }
+
+        /// <summary>
+        /// Converts LEAN futures symbol format to Databento format
+        /// </summary>
+        /// <param name="leanSymbol">LEAN symbol (e.g., ES19Z25)</param>
+        /// <returns>Databento symbol (e.g., ESZ5)</returns>
+        private string ConvertToDatabentoFormat(string leanSymbol)
+        {
+            // Pattern: ROOT + DAY(1-2 digits) + MONTH_CODE(1 letter) + YEAR(2 digits)
+            // Example: ES19Z25 -> ESZ5
+            // Databento uses single digit year for the 2020s decade
+            
+            // Find the position of the month code (single letter: F,G,H,J,K,M,N,Q,U,V,X,Z)
+            var monthCodes = new[] { 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'Q', 'U', 'V', 'X', 'Z' };
+            
+            for (int i = 0; i < leanSymbol.Length; i++)
+            {
+                if (Array.IndexOf(monthCodes, leanSymbol[i]) >= 0)
+                {
+                    // Found the month code
+                    // Extract root (everything before the digits before month code)
+                    var root = leanSymbol.Substring(0, i);
+                    
+                    // Remove trailing digits from root (the day component)
+                    while (root.Length > 0 && char.IsDigit(root[root.Length - 1]))
+                    {
+                        root = root.Substring(0, root.Length - 1);
+                    }
+                    
+                    // Extract month code
+                    var monthCode = leanSymbol[i];
+                    
+                    // Extract year (last 2 digits)
+                    var yearStr = leanSymbol.Substring(i + 1);
+                    
+                    // Convert to single digit year for Databento format
+                    // 25 -> 5, 24 -> 4, etc.
+                    if (yearStr.Length == 2 && int.TryParse(yearStr, out int year))
+                    {
+                        var singleDigitYear = year % 10;
+                        
+                        // Databento format: ROOT + MONTH_CODE + SINGLE_DIGIT_YEAR
+                        return $"{root}{monthCode}{singleDigitYear}";
+                    }
+                    else if (yearStr.Length == 1)
+                    {
+                        // Already single digit
+                        return $"{root}{monthCode}{yearStr}";
+                    }
+                    
+                    Log.Error($"ConvertToDatabentoFormat(): Invalid year format in {leanSymbol}");
+                    return leanSymbol;
+                }
             }
             
-            return symbol.Value;
+            // If no month code found, return as-is (might already be in correct format)
+            Log.Trace($"ConvertToDatabentoFormat(): No month code found in {leanSymbol}, using as-is");
+            return leanSymbol;
         }
 
         /// <summary>
@@ -524,7 +698,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private string GetSchema(Resolution resolution, TickType tickType)
         {
-            if (tickType == TickType.Trade)
+            if (tickType == TickType.Trade || tickType == TickType.Quote)
             {
                 if (resolution == Resolution.Tick)
                     return "trades";
@@ -542,6 +716,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 // top of book
                 if (resolution == Resolution.Tick || resolution == Resolution.Second || resolution == Resolution.Minute || resolution == Resolution.Hour || resolution == Resolution.Daily)
                     return "mbp-1";
+            }
+            else if (tickType == TickType.OpenInterest)
+            {
+                return "statistics";
             }
 
             throw new NotSupportedException($"Unsupported resolution {resolution} / {tickType}");
@@ -567,11 +745,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 }
                 catch (Exception ex)
                 {
-                    Log.Debug($"DatabentoRawClient.Disconnect(): Error during disconnect: {ex.Message}");
+                    Log.Trace($"DatabentoRawClient.Disconnect(): Error during disconnect: {ex.Message}");
                 }
 
                 ConnectionStatusChanged?.Invoke(this, false);
-                Log.Debug("DatabentoRawClient.Disconnect(): Disconnected from DataBento gateway");
+                Log.Trace("DatabentoRawClient.Disconnect(): Disconnected from DataBento gateway");
             }
         }
 

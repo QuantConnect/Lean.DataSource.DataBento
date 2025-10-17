@@ -49,6 +49,11 @@ namespace QuantConnect.DataLibrary.Tests
         /// <param name="slice">Slice object keyed by symbol containing the stock data</param>
         public override void OnData(Slice slice)
         {
+            Log($"_esFuture Open: {_esFuture.Open}");
+            Log($"_esFuture High: {_esFuture.High}");
+            Log($"_esFuture Low: {_esFuture.Low}");
+            Log($"_esFuture Close: {_esFuture.Close}");
+
             if (!Portfolio.Invested)
             {
                 SetHoldings(_esFuture.Symbol, 1);

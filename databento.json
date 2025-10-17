@@ -30,13 +30,7 @@
 			],
 			"markets": [
 				"CME",
-				"Globex",
-				"ICE",
-				"CBOE",
-				"XNAS",
-				"NYMEX",
-				"CBOT",
-				"COMEX"
+				"Globex"
 			]
 		}
 	}

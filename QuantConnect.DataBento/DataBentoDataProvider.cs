@@ -20,8 +20,6 @@ using QuantConnect.Data;
 using QuantConnect.Util;
 using QuantConnect.Interfaces;
 using System.Collections.Generic;
-using QuantConnect.Lean.Engine.DataFeeds;
-using QuantConnect.Lean.Engine.HistoricalData;
 using QuantConnect.Configuration;
 using QuantConnect.Logging;
 using QuantConnect.Packets;
@@ -38,7 +36,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// <inheritdoc cref="IDataAggregator"/>
         /// </summary>
-        private IDataAggregator _dataAggregator = null!;
+        private readonly IDataAggregator _dataAggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(
+            Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager"), forceTypeNameOnExisting: false);
 
         /// <summary>
         /// <inheritdoc cref="EventBasedDataQueueHandlerSubscriptionManager"/>
@@ -67,7 +66,6 @@ namespace QuantConnect.Lean.DataSource.DataBento
         private bool _unsupportedSecurityTypeMessageLogged;
         private bool _unsupportedDataTypeMessageLogged;
         private bool _potentialUnsupportedResolutionMessageLogged;
-        private bool _potentialUnsupportedTickTypeMessageLogged;
 
 
         /// <summary>
@@ -80,6 +78,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         public DataBentoProvider()
         {
+            Log.Trace("From Plugin DataBentoProvider.DataBentoProvider() being initialized 1");
             _apiKey = Config.Get("databento-api-key");
             if (string.IsNullOrEmpty(_apiKey))
             {
@@ -96,6 +95,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <param name="apiKey">DataBento API key</param>
         public DataBentoProvider(string apiKey)
         {
+            Log.Trace("From Plugin DataBentoProvider.DataBentoProvider() being initialized 2");
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _dataDownloader = new DataBentoDataDownloader(_apiKey);
             Initialize();
@@ -106,58 +106,101 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private void Initialize()
         {
-            _dataAggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>("DataAggregator");
+            Log.Trace("DataBentoProvider.Initialize(): Starting initialization");
+
             _subscriptionManager = new EventBasedDataQueueHandlerSubscriptionManager();
             _subscriptionManager.SubscribeImpl = (symbols, tickType) =>
             {
+                Log.Trace($"DataBentoProvider.SubscribeImpl(): Received subscription request for {symbols.Count()} symbols, TickType={tickType}");
+
                 foreach (var symbol in symbols)
                 {
+                    Log.Trace($"DataBentoProvider.SubscribeImpl(): Processing symbol {symbol}");
+
                     if (_subscriptionConfigs.TryGetValue(symbol, out var config))
                     {
+                        Log.Trace($"DataBentoProvider.SubscribeImpl(): Found config for {symbol}, Resolution={config.Resolution}, TickType={config.TickType}");
+
                         if (_client?.IsConnected == true)
                         {
+                            Log.Trace($"DataBentoProvider.SubscribeImpl(): Client is connected, attempting async subscribe for {symbol}");
                             Task.Run(() =>
                             {
                                 var success = _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
-                                if (!success)
+                                if (success)
                                 {
-                                    Log.Error($"DataBentoProvider.Subscribe(): Failed to subscribe to live data for {config.Symbol}");
+                                    Log.Trace($"DataBentoProvider.SubscribeImpl(): Successfully subscribed to {config.Symbol}");
+                                }
+                                else
+                                {
+                                    Log.Error($"DataBentoProvider.SubscribeImpl(): Failed to subscribe to live data for {config.Symbol}");
                                 }
                             });
                         }
+                        else
+                        {
+                            Log.Trace($"DataBentoProvider.SubscribeImpl(): Client not connected, skipping subscription for {symbol}");
+                        }
+                    }
+                    else
+                    {
+                        Log.Trace($"DataBentoProvider.SubscribeImpl(): No config found for {symbol}, skipping");
                     }
                 }
+
                 return true;
             };
+
             _subscriptionManager.UnsubscribeImpl = (symbols, tickType) =>
             {
+                Log.Trace($"DataBentoProvider.UnsubscribeImpl(): Received unsubscribe request for {symbols.Count()} symbols, TickType={tickType}");
+
                 foreach (var symbol in symbols)
                 {
+                    Log.Trace($"DataBentoProvider.UnsubscribeImpl(): Processing symbol {symbol}");
+
                     if (_client?.IsConnected == true)
                     {
+                        Log.Trace($"DataBentoProvider.UnsubscribeImpl(): Client is connected, unsubscribing from {symbol}");
                         Task.Run(() =>
                         {
                             _client.Unsubscribe(symbol);
+                            Log.Trace($"DataBentoProvider.UnsubscribeImpl(): Unsubscribed from {symbol}");
                         });
                     }
+                    else
+                    {
+                        Log.Trace($"DataBentoProvider.UnsubscribeImpl(): Client not connected, skipping unsubscribe for {symbol}");
+                    }
                 }
+
                 return true;
             };
 
             // Initialize the live client
+            Log.Trace("DataBentoProvider.Initialize(): Creating DatabentoRawClient");
             _client = new DatabentoRawClient(_apiKey);
             _client.DataReceived += OnDataReceived;
             _client.ConnectionStatusChanged += OnConnectionStatusChanged;
 
             // Connect to live gateway
+            Log.Trace("DataBentoProvider.Initialize(): Attempting async connection to DataBento live gateway");
             Task.Run(async () =>
             {
                 var connected = await _client.ConnectAsync();
-                if (!connected)
+                Log.Trace($"DataBentoProvider.Initialize(): ConnectAsync() returned {connected}");
+
+                if (connected)
+                {
+                    Log.Trace("DataBentoProvider.Initialize(): Successfully connected to DataBento live gateway");
+                }
+                else
                 {
                     Log.Error("DataBentoProvider.Initialize(): Failed to connect to DataBento live gateway");
                 }
             });
+
+            Log.Trace("DataBentoProvider.Initialize(): Initialization complete");
         }
 
         /// <summary>
@@ -168,6 +211,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <returns>The new enumerator for this subscription request</returns>
         public IEnumerator<BaseData>? Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
         {
+            Log.Trace("From Plugin Subscribed ENTER");
             if (!CanSubscribe(dataConfig)){
                 return null;
             }
@@ -177,6 +221,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
             _subscriptionManager.Subscribe(dataConfig);
             _activeSubscriptionConfigs.Add(dataConfig);
 
+            Log.Trace("From Plugin Subscribed DONE");
             return enumerator;
         }
 
@@ -298,7 +343,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
             // Check supported data types
             if (dataType != typeof(TradeBar) &&
                 dataType != typeof(QuoteBar) &&
-                dataType != typeof(Tick))
+                dataType != typeof(Tick) &&
+                dataType != typeof(OpenInterest))
             {
                 if (!_unsupportedDataTypeMessageLogged)
                 {
@@ -310,21 +356,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             // Warn about potential limitations for tick data
             // I'm mimicing polygon implementation with this
-            if (resolution < Resolution.Second && !_potentialUnsupportedResolutionMessageLogged)
+            if (!_potentialUnsupportedResolutionMessageLogged)
             {
                 _potentialUnsupportedResolutionMessageLogged = true;
                 Log.Trace("DataBentoDataProvider.IsSupported(): " +
                     $"Subscription for {securityType}-{dataType}-{tickType}-{resolution} will be attempted. " +
                     $"An Advanced DataBento subscription plan is required to stream tick data.");
-            }
-
-            // Warn about potential limitations for quote data
-            if (tickType == TickType.Quote && !_potentialUnsupportedTickTypeMessageLogged)
-            {
-                _potentialUnsupportedTickTypeMessageLogged = true;
-                Log.Trace("DataBentoDataProvider.IsSupported(): " +
-                    $"Subscription for {securityType}-{dataType}-{tickType}-{resolution} will be attempted. " +
-                    $"An Advanced DataBento subscription plan is required to stream quote data.");
             }
 
             return true;
@@ -334,6 +371,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private void OnDataReceived(object? sender, BaseData data)
         {
+            Log.Trace($"DataBentoProvider.OnDataReceived(): Received data: {data}");
             try
             {
                 _dataAggregator.Update(data);
@@ -349,7 +387,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private void OnConnectionStatusChanged(object? sender, bool isConnected)
         {
-            Log.Debug($"DataBentoProvider.OnConnectionStatusChanged(): Connection status changed to: {isConnected}");
+            Log.Trace($"DataBentoProvider.OnConnectionStatusChanged(): Connection status changed to: {isConnected}");
 
             if (isConnected)
             {
