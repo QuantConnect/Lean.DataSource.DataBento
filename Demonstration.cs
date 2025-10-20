@@ -14,61 +14,69 @@
  *
 */
 
-using QuantConnect.Data;
-using QuantConnect.Util;
-using QuantConnect.Orders;
 using QuantConnect.Algorithm;
-using QuantConnect.DataSource;
 using QuantConnect.Data.Market;
+using QuantConnect.Interfaces;
+using QuantConnect;
+using QuantConnect.Data;
 using QuantConnect.Securities.Future;
+using QuantConnect.Util;
+using System;
 
-namespace QuantConnect.DataLibrary.Tests
+namespace QuantConnect.Algorithm.CSharp
 {
-    /// <summary>
-    /// Example algorithm using the custom data type as a source of alpha
-    /// </summary>
-    public class CustomDataAlgorithm : QCAlgorithm
+    public class DatabentoFuturesTestAlgorithm : QCAlgorithm
     {
-        private Future _esFuture;
+        private Future _es;
 
-        /// <summary>
-        /// Initialise the data and resolution required, as well as the cash and start-end dates for your algorithm. All algorithms must initialized.
-        /// </summary>
         public override void Initialize()
         {
-            SetStartDate(2021, 10, 07);  //Set Start Date
-            SetEndDate(2021, 10, 11);    //Set End Date
-            _esFuture = AddFuture("ES");
+            Log("Algorithm Initialize");
 
-            _esFuture.SetFilter(0, 182);
+            SetStartDate(2025, 10, 1);
+            SetStartDate(2025, 10, 16);
+            SetCash(100000);
+
+            var exp = new DateTime(2025, 12, 19);
+            var symbol = QuantConnect.Symbol.CreateFuture("ES", Market.CME, exp);
+            _es = AddFutureContract(symbol, Resolution.Minute, true, 1, true);
+            Log($"_es: {_es}");
         }
 
-        /// <summary>
-        /// OnData event is the primary entry point for your algorithm. Each new data point will be pumped in here.
-        /// </summary>
-        /// <param name="slice">Slice object keyed by symbol containing the stock data</param>
         public override void OnData(Slice slice)
         {
-            Log($"_esFuture Open: {_esFuture.Open}");
-            Log($"_esFuture High: {_esFuture.High}");
-            Log($"_esFuture Low: {_esFuture.Low}");
-            Log($"_esFuture Close: {_esFuture.Close}");
-
-            if (!Portfolio.Invested)
+            if (!slice.HasData)
             {
-                SetHoldings(_esFuture.Symbol, 1);
+                Log("Slice has no data");
+                return;
             }
-        }
-
-        /// <summary>
-        /// Order fill event handler. On an order fill update the resulting information is passed to this method.
-        /// </summary>
-        /// <param name="orderEvent">Order event details containing details of the events</param>
-        public override void OnOrderEvent(OrderEvent orderEvent)
-        {
-            if (orderEvent.Status.IsFill())
+            
+            Log($"OnData: Slice has {slice.Count} data points");
+            
+            // For Tick resolution, check Ticks collection
+            if (slice.Ticks.ContainsKey(_es.Symbol))
             {
-                Debug($"Purchased Stock: {orderEvent.Symbol}");
+                var ticks = slice.Ticks[_es.Symbol];
+                Log($"Received {ticks.Count} ticks for {_es.Symbol}");
+                
+                foreach (var tick in ticks)
+                {
+                    if (tick.TickType == TickType.Trade)
+                    {
+                        Log($"Trade Tick - Price: {tick.Price}, Quantity: {tick.Quantity}, Time: {tick.Time}");
+                    }
+                    else if (tick.TickType == TickType.Quote)
+                    {
+                        Log($"Quote Tick - Bid: {tick.BidPrice}x{tick.BidSize}, Ask: {tick.AskPrice}x{tick.AskSize}, Time: {tick.Time}");
+                    }
+                }
+            }
+            
+            // These won't have data for Tick resolution
+            if (slice.Bars.ContainsKey(_es.Symbol))
+            {
+                var bar = slice.Bars[_es.Symbol];
+                Log($"Bar - O:{bar.Open} H:{bar.High} L:{bar.Low} C:{bar.Close} V:{bar.Volume}");
             }
         }
     }

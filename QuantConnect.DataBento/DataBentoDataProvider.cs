@@ -23,6 +23,7 @@ using System.Collections.Generic;
 using QuantConnect.Configuration;
 using QuantConnect.Logging;
 using QuantConnect.Packets;
+using QuantConnect.Securities;
 using System.Threading.Tasks;
 using QuantConnect.Data.Market;
 
@@ -67,7 +68,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
         private bool _unsupportedDataTypeMessageLogged;
         private bool _potentialUnsupportedResolutionMessageLogged;
 
+        private bool _sessionStarted = false;
+        private readonly object _sessionLock = new object();
 
+        private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
+        
         /// <summary>
         /// Returns true if we're currently connected to the Data Provider
         /// </summary>
@@ -124,12 +130,30 @@ namespace QuantConnect.Lean.DataSource.DataBento
                         if (_client?.IsConnected == true)
                         {
                             Log.Trace($"DataBentoProvider.SubscribeImpl(): Client is connected, attempting async subscribe for {symbol}");
-                            Task.Run(() =>
+                            Task.Run(async () =>
                             {
                                 var success = _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
                                 if (success)
                                 {
                                     Log.Trace($"DataBentoProvider.SubscribeImpl(): Successfully subscribed to {config.Symbol}");
+                                    
+                                    // Start session after first successful subscription
+                                    lock (_sessionLock)
+                                    {
+                                        if (!_sessionStarted)
+                                        {
+                                            Log.Trace("DataBentoProvider.SubscribeImpl(): Starting DataBento session to receive data");
+                                            _sessionStarted = _client.StartSession();
+                                            if (_sessionStarted)
+                                            {
+                                                Log.Trace("DataBentoProvider.SubscribeImpl(): Session started successfully - data should begin flowing");
+                                            }
+                                            else
+                                            {
+                                                Log.Error("DataBentoProvider.SubscribeImpl(): Failed to start session");
+                                            }
+                                        }
+                                    }
                                 }
                                 else
                                 {
@@ -366,19 +390,58 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             return true;
         }
+
+        /// <summary>
+        /// Converts the given UTC time into the symbol security exchange time zone
+        /// </summary>
+        private DateTime GetTickTime(Symbol symbol, DateTime utcTime)
+        {
+            var exchangeTimeZone = _symbolExchangeTimeZones.GetOrAdd(symbol, sym =>
+            {
+                if (_marketHoursDatabase.TryGetEntry(sym.ID.Market, sym, sym.SecurityType, out var entry))
+                {
+                    return entry.ExchangeHours.TimeZone;
+                }
+                // Futures default to Chicago
+                return TimeZones.Chicago;
+            });
+
+            return utcTime.ConvertFromUtc(exchangeTimeZone);
+        }
+
         // <summary>
         /// Handles data received from the live client
         /// </summary>
         private void OnDataReceived(object? sender, BaseData data)
         {
-            Log.Trace($"DataBentoProvider.OnDataReceived(): Received data: {data}");
             try
             {
-                _dataAggregator.Update(data);
+                if (data is Tick tick)
+                {
+                    tick.Time = GetTickTime(tick.Symbol, tick.Time);
+                    _dataAggregator.Update(tick);
+                    
+                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated tick - Symbol: {tick.Symbol}, " +
+                            $"TickType: {tick.TickType}, Price: {tick.Value}, Quantity: {tick.Quantity}");
+                }
+                else if (data is TradeBar tradeBar)
+                {
+                    tradeBar.Time = GetTickTime(tradeBar.Symbol, tradeBar.Time);
+                    tradeBar.EndTime = GetTickTime(tradeBar.Symbol, tradeBar.EndTime);
+                    _dataAggregator.Update(tradeBar);
+                    
+                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated TradeBar - Symbol: {tradeBar.Symbol}, " +
+                            $"O:{tradeBar.Open} H:{tradeBar.High} L:{tradeBar.Low} C:{tradeBar.Close} V:{tradeBar.Volume}");
+                }
+                else
+                {
+                    data.Time = GetTickTime(data.Symbol, data.Time);
+                    _dataAggregator.Update(data);
+                }
             }
             catch (Exception ex)
             {
-                Log.Error($"DataBentoProvider.OnDataReceived(): Error updating data aggregator: {ex.Message}");
+                Log.Error($"DataBentoProvider.OnDataReceived(): Error updating data aggregator: {ex.Message}\n{ex.StackTrace}");
             }
         }
 
@@ -391,12 +454,31 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             if (isConnected)
             {
+                // Reset session flag on reconnection
+                lock (_sessionLock)
+                {
+                    _sessionStarted = false;
+                }
+                
                 // Resubscribe to all active subscriptions
                 Task.Run(() =>
                 {
                     foreach (var config in _activeSubscriptionConfigs)
                     {
                         _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
+                    }
+                    
+                    // Start session after resubscribing
+                    if (_activeSubscriptionConfigs.Any())
+                    {
+                        lock (_sessionLock)
+                        {
+                            if (!_sessionStarted)
+                            {
+                                Log.Trace("DataBentoProvider.OnConnectionStatusChanged(): Starting session after reconnection");
+                                _sessionStarted = _client.StartSession();
+                            }
+                        }
                     }
                 });
             }

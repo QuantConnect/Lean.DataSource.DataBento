@@ -18,16 +18,14 @@ using System;
 using System.IO;
 using System.Text;
 using System.Net.Sockets;
-using System.Text;
-using System.Text.Json;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Logging;
-using QuantConnect.Configuration;
 
 namespace QuantConnect.Lean.DataSource.DataBento
 {
@@ -38,14 +36,19 @@ namespace QuantConnect.Lean.DataSource.DataBento
     {
         private readonly string _apiKey;
         private readonly string _gateway;
+        private readonly string _dataset;
         private TcpClient? _tcpClient;
         private NetworkStream? _stream;
+        private StreamReader? _reader;
+        private StreamWriter? _writer;
         private CancellationTokenSource _cancellationTokenSource;
         private readonly ConcurrentDictionary<Symbol, (Resolution, TickType)> _subscriptions;
         private readonly object _connectionLock = new object();
         private bool _isConnected;
         private bool _disposed;
         private const decimal PriceScaleFactor = 1e-9m;
+        private readonly ConcurrentDictionary<long, Symbol> _instrumentIdToSymbol = new ConcurrentDictionary<long, Symbol>();
+        private readonly ConcurrentDictionary<Symbol, Tick> _lastTicks = new ConcurrentDictionary<Symbol, Tick>();
 
         /// <summary>
         /// Event fired when new data is received
@@ -65,12 +68,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Initializes a new instance of the DatabentoRawClient
         /// </summary>
-        /// <param name="apiKey">DataBento API key</param>
-        /// <param name="gateway">Gateway address default for futures glbx-mdp3.lsg.databento.com:13000</param>
-        public DatabentoRawClient(string apiKey, string gateway = "glbx-mdp3.lsg.databento.com:13000")
+        public DatabentoRawClient(string apiKey, string gateway = "glbx-mdp3.lsg.databento.com:13000", string dataset = "GLBX.MDP3")
         {
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
             _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
+            _dataset = dataset;
             _subscriptions = new ConcurrentDictionary<Symbol, (Resolution, TickType)>();
             _cancellationTokenSource = new CancellationTokenSource();
         }
@@ -95,8 +97,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 _tcpClient = new TcpClient();
                 await _tcpClient.ConnectAsync(host, port).ConfigureAwait(false);
                 _stream = _tcpClient.GetStream();
+                _reader = new StreamReader(_stream, Encoding.ASCII);
+                _writer = new StreamWriter(_stream, Encoding.ASCII) { AutoFlush = true };
 
-                // Send authentication
+                // Perform authentication handshake
                 if (await AuthenticateAsync().ConfigureAwait(false))
                 {
                     _isConnected = true;
@@ -105,7 +109,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     // Start message processing task
                     _ = Task.Run(() => ProcessMessagesAsync(_cancellationTokenSource.Token));
 
-                    Log.Trace("DatabentoRawClient.ConnectAsync(): Connected to DataBento live gateway");
+                    Log.Trace("DatabentoRawClient.ConnectAsync(): Connected and authenticated to DataBento live gateway");
                     return true;
                 }
             }
@@ -119,44 +123,66 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
-        /// Authenticates with the DataBento gateway using CRAM
+        /// Authenticates with the DataBento gateway using CRAM-SHA256
         /// </summary>
         private async Task<bool> AuthenticateAsync()
         {
-            if (_stream == null)
+            if (_reader == null || _writer == null)
                 return false;
 
             try
             {
-                // DataBento authentication message format
-                var authMessage = new
+                // Read greeting and challenge
+                string? versionLine = await _reader.ReadLineAsync();
+                string? cramLine = await _reader.ReadLineAsync();
+
+                if (string.IsNullOrEmpty(versionLine) || string.IsNullOrEmpty(cramLine))
                 {
-                    msg_type = "authenticate",
-                    api_key = _apiKey,
-                    version = "1.0"
-                };
-
-                var authJson = JsonSerializer.Serialize(authMessage);
-                var authBytes = Encoding.UTF8.GetBytes(authJson + "\n");
-
-                await _stream.WriteAsync(authBytes, 0, authBytes.Length);
-                await _stream.FlushAsync();
-
-                // Read authentication response
-                messageBuffer.Clear();
-                var bytesRead = await _stream.ReadAsync(responseBuffer, 0, responseBuffer.Length);
-                var response = Encoding.UTF8.GetString(responseBuffer, 0, bytesRead);
-
-                Log.Debug($"DatabentoRawClient.AuthenticateAsync(): Auth response: {response}");
-
-                // Parse response to check if authentication was successful
-                var responseDoc = JsonDocument.Parse(response.Trim());
-                if (responseDoc.RootElement.TryGetProperty("success", out var successElement))
-                {
-                    return successElement.GetBoolean();
+                    Log.Error("DatabentoRawClient.AuthenticateAsync(): Failed to receive greeting or challenge");
+                    return false;
                 }
 
-                return response.Contains("success") || response.Contains("authenticated");
+                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Version: {versionLine}");
+                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Challenge: {cramLine}");
+
+                // Parse challenge
+                string[] cramParts = cramLine.Split('=');
+                if (cramParts.Length != 2 || cramParts[0] != "cram")
+                {
+                    Log.Error("DatabentoRawClient.AuthenticateAsync(): Invalid challenge format");
+                    return false;
+                }
+                string cram = cramParts[1].Trim();
+
+                // Compute auth hash
+                string concat = $"{cram}|{_apiKey}";
+                string hashHex = ComputeSHA256(concat);
+                string bucketId = _apiKey.Length >= 5 ? _apiKey.Substring(_apiKey.Length - 5) : _apiKey;
+                string authString = $"{hashHex}-{bucketId}";
+
+                // Send auth message
+                string authMsg = $"auth={authString}|dataset={_dataset}|encoding=json|ts_out=0";
+                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Sending auth");
+                await _writer.WriteLineAsync(authMsg);
+
+                // Read auth response
+                string? authResp = await _reader.ReadLineAsync();
+                if (string.IsNullOrEmpty(authResp))
+                {
+                    Log.Error("DatabentoRawClient.AuthenticateAsync(): No authentication response received");
+                    return false;
+                }
+
+                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Auth response: {authResp}");
+
+                if (!authResp.Contains("success=1"))
+                {
+                    Log.Error($"DatabentoRawClient.AuthenticateAsync(): Authentication failed: {authResp}");
+                    return false;
+                }
+
+                Log.Trace("DatabentoRawClient.AuthenticateAsync(): Authentication successful");
+                return true;
             }
             catch (Exception ex)
             {
@@ -164,16 +190,24 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 return false;
             }
         }
+        private static string ComputeSHA256(string input)
+        {
+            using var sha = SHA256.Create();
+            byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
+            var sb = new StringBuilder();
+            foreach (byte b in hash)
+            {
+                sb.Append(b.ToString("x2"));
+            }
+            return sb.ToString();
+        }
 
         /// <summary>
         /// Subscribes to live data for a symbol
         /// </summary>
-        /// <param name="symbol">Symbol to subscribe to</param>
-        /// <param name="resolution">Data resolution</param>
-        /// <param name="tickType">The tick type</param>
         public bool Subscribe(Symbol symbol, Resolution resolution, TickType tickType)
         {
-            if (!IsConnected || _stream == null)
+            if (!IsConnected || _writer == null)
             {
                 Log.Error("DatabentoRawClient.Subscribe(): Not connected to gateway");
                 return false;
@@ -184,14 +218,14 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 var databentoSymbol = MapSymbolToDataBento(symbol);
                 var schema = GetSchema(resolution, tickType);
 
-                var subscribeMessage = $"schema={schema}|stype_in=raw_symbol|symbols={databentoSymbol}\n";
-                var messageBytes = Encoding.UTF8.GetBytes(subscribeMessage);
-
-                _stream.Write(messageBytes, 0, messageBytes.Length);
-                _stream.Flush();
+                // subscribe
+                var subscribeMessage = $"schema={schema}|stype_in=parent|symbols={databentoSymbol}";
+                Log.Trace($"DatabentoRawClient.Subscribe(): Subscribing with message: {subscribeMessage}");
+                
+                _writer.WriteLine(subscribeMessage);
 
                 _subscriptions.TryAdd(symbol, (resolution, tickType));
-                Log.Trace($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} at {resolution} resolution");
+                Log.Trace($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} ({databentoSymbol}) at {resolution} resolution for {tickType}");
 
                 return true;
             }
@@ -203,9 +237,32 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
+        /// Starts the session to begin receiving data
+        /// </summary>
+        public bool StartSession()
+        {
+            if (!IsConnected || _writer == null)
+            {
+                Log.Error("DatabentoRawClient.StartSession(): Not connected");
+                return false;
+            }
+
+            try
+            {
+                Log.Trace("DatabentoRawClient.StartSession(): Starting session");
+                _writer.WriteLine("start_session=1");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"DatabentoRawClient.StartSession(): Failed to start session: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Unsubscribes from live data for a symbol
         /// </summary>
-        /// <param name="symbol">Symbol to unsubscribe from</param>
         public bool Unsubscribe(Symbol symbol)
         {
             try
@@ -214,7 +271,6 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 {
                     Log.Trace($"DatabentoRawClient.Unsubscribe(): Unsubscribed from {symbol}");
                 }
-
                 return true;
             }
             catch (Exception ex)
@@ -230,56 +286,35 @@ namespace QuantConnect.Lean.DataSource.DataBento
         private async Task ProcessMessagesAsync(CancellationToken cancellationToken)
         {
             Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Starting message processing");
-            if (_stream == null)
+            if (_reader == null)
             {
-                Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): No stream to process messages");
+                Log.Error("DatabentoRawClient.ProcessMessagesAsync(): No reader available");
                 return;
             }
 
-            var buffer = new byte[8192];
-            var messageBuffer = new StringBuilder();
             var messageCount = 0;
 
             try
             {
                 while (!cancellationToken.IsCancellationRequested && IsConnected)
                 {
-                    var bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken);
-                    if (bytesRead == 0)
+                    var line = await _reader.ReadLineAsync();
+                    if (line == null)
                     {
                         Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Connection closed by server");
                         break;
                     }
 
-                    Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Read {bytesRead} bytes");
+                    if (string.IsNullOrWhiteSpace(line))
+                        continue;
 
-                    var receivedData = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    messageBuffer.Append(receivedData);
-
-                    // Process complete messages
-                    var messageContent = messageBuffer.ToString();
-                    var lastNewlineIndex = messageContent.LastIndexOf('\n');
-
-                    if (lastNewlineIndex > -1)
+                    messageCount++;
+                    if (messageCount <= 50 || messageCount % 100 == 0)
                     {
-                        var completeMessages = messageContent.Substring(0, lastNewlineIndex);
-                        var messages = completeMessages.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-
-                        Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Processing {messages.Length} complete messages");
-
-                        foreach (var message in messages)
-                        {
-                            messageCount++;
-                            Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Message #{messageCount}: {message.Substring(0, Math.Min(200, message.Length))}...");
-                            await ProcessSingleMessage(message);
-                        }
-
-                        messageBuffer.Clear();
-                        if (lastNewlineIndex < messageContent.Length - 1)
-                        {
-                            messageBuffer.Append(messageContent.Substring(lastNewlineIndex + 1));
-                        }
+                        Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Message #{messageCount}: {line.Substring(0, Math.Min(150, line.Length))}...");
                     }
+
+                    await ProcessSingleMessage(line);
                 }
             }
             catch (OperationCanceledException)
@@ -306,235 +341,173 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private async Task ProcessSingleMessage(string message)
         {
-            Log.Trace("DatabentoRawClient.ProcessSingleMessage(): Processing message");
-            Log.Trace($"Msg {message}");
-            try
-            {
-                // First, try to parse as JSON
-                using (var document = JsonDocument.Parse(message))
-                {
-                    var root = document.RootElement;
-
-                    if (root.TryGetProperty("hd", out var headerElement))
-                    {
-                        // This is a DBN message, let's check rtype
-                        if (headerElement.TryGetProperty("rtype", out var rtypeElement))
-                        {
-                            var rtype = rtypeElement.GetByte();
-                            if (rtype == 21) // Error
-                            {
-                                if (root.TryGetProperty("err", out var errElement))
-                                {
-                                    Log.Error($"Databento error: {errElement.GetString()}");
-                                }
-                                return;
-                            }
-                        }
-                    }
-
-                    if (root.TryGetProperty("msg_type", out var msgTypeElement))
-                    {
-                        var msgType = msgTypeElement.GetString();
-
-                        switch (msgType)
-                        {
-                            case "heartbeat":
-                                // Handle heartbeat 
-                                break;
-
-                            case "error":
-                                HandleErrorMessage(root);
-                                break;
-
-                            case "subscription_response":
-                                HandleSubscriptionResponse(root);
-                                break;
-
-                            case "data":
-                                await HandleDataMessage(root);
-                                break;
-
-                            default:
-                                Log.Trace($"DatabentoRawClient.ProcessSingleMessage(): Unknown message type: {msgType}");
-                                break;
-                        }
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                // If it's not a valid JSON
-                if (message.Contains("error") || message.Contains("err"))
-                {
-                    Log.Error($"Databento error: {message}");
-                }
-                else if (message.Contains("success"))
-                {
-                    Log.Trace($"Databento success: {message}");
-                }
-                else
-                {
-                    Log.Trace($"Databento message: {message}");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"DatabentoRawClient.ProcessSingleMessage(): Error processing message: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Handles error messages from DataBento
-        /// </summary>
-        private void HandleErrorMessage(JsonElement root)
-        {
-            if (root.TryGetProperty("error", out var errorElement))
-            {
-                var errorMsg = errorElement.GetString();
-                Log.Error($"DatabentoRawClient.HandleErrorMessage(): DataBento error: {errorMsg}");
-            }
-        }
-
-        /// <summary>
-        /// Handles subscription response messages
-        /// </summary>
-        private void HandleSubscriptionResponse(JsonElement root)
-        {
-            if (root.TryGetProperty("success", out var successElement))
-            {
-                var success = successElement.GetBoolean();
-                Log.Trace($"DatabentoRawClient.HandleSubscriptionResponse(): Subscription response: {success}");
-            }
-        }
-
-        /// <summary>
-        /// Handles incoming data messages and converts them to LEAN BaseData
-        /// </summary>
-        private async Task HandleDataMessage(JsonElement root)
-        {
-            Log.Trace($"DatabentoRawClient.HandleDataMessage(): Processing data message: {root}");
             await Task.CompletedTask;
 
             try
             {
-                // Extract common fields
-                if (!root.TryGetProperty("symbol", out var symbolElement) ||
-                    !root.TryGetProperty("ts_event", out var timestampElement))
-                {
-                    return;
-                }
+                using var document = JsonDocument.Parse(message);
+                var root = document.RootElement;
 
-                var databentoSymbol = symbolElement.GetString();
-                var timestampNs = timestampElement.GetInt64();
-                
-                // Manual conversion from nanoseconds to DateTime
-                // Unix epoch: January 1, 1970 00:00:00 UTC
-                var unixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-                var timestamp = unixEpoch.AddTicks(timestampNs / 100); // Convert nanoseconds to ticks (100ns per tick)
-
-                // Find the corresponding LEAN symbol
-                Symbol? leanSymbol = null;
-                (Resolution resolution, TickType tickType) subscription = default;
-                foreach (var kvp in _subscriptions)
+                // Check for error messages
+                if (root.TryGetProperty("hd", out var headerElement))
                 {
-                    if (MapSymbolToDataBento(kvp.Key) == databentoSymbol)
+                    if (headerElement.TryGetProperty("rtype", out var rtypeElement))
                     {
-                        leanSymbol = kvp.Key;
-                        subscription = kvp.Value;
-                        break;
+                        var rtype = rtypeElement.GetInt32();
+                        
+                        if (rtype == 23)
+                        {
+                            if (root.TryGetProperty("msg", out var msgElement))
+                            {
+                                Log.Trace($"DatabentoRawClient: System message: {msgElement.GetString()}");
+                            }
+                            return;
+                        }
+                        else if (rtype == 22)
+                        {
+                            // Symbol mapping message
+                            if (root.TryGetProperty("stype_in_symbol", out var inSymbol) &&
+                                root.TryGetProperty("stype_out_symbol", out var outSymbol) &&
+                                headerElement.TryGetProperty("instrument_id", out var instId))
+                            {
+                                var instrumentId = instId.GetInt64();
+                                var outSymbolStr = outSymbol.GetString();
+                                
+                                Log.Trace($"DatabentoRawClient: Symbol mapping: {inSymbol.GetString()} -> {outSymbolStr} (instrument_id: {instrumentId})");
+                                
+                                // Find the subscription that matches this symbol
+                                foreach (var kvp in _subscriptions)
+                                {
+                                    var leanSymbol = kvp.Key;
+                                    // Check if the DataBento symbol matches our subscription
+                                    // For ES19Z25, the outSymbol might be ESZ25 or similar
+                                    if (outSymbolStr != null)
+                                    {
+                                        _instrumentIdToSymbol[instrumentId] = leanSymbol;
+                                        Log.Trace($"DatabentoRawClient: Mapped instrument_id {instrumentId} to {leanSymbol}");
+                                        break;
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                        else if (rtype == 0 || rtype == 1 || rtype == 160)
+                        {
+                            // Trade data or MBO
+                            await HandleTradeMessage(root, headerElement);
+                            return;
+                        }
                     }
                 }
 
-                if (leanSymbol == null)
+                // Handle other message types if needed
+                if (root.TryGetProperty("error", out var errorElement))
                 {
-                    Log.Trace($"DatabentoRawClient.HandleDataMessage(): Received data for unsubscribed symbol: {databentoSymbol}");
+                    Log.Error($"DatabentoRawClient: Server error: {errorElement.GetString()}");
+                }
+            }
+            catch (JsonException ex)
+            {
+                Log.Error($"DatabentoRawClient.ProcessSingleMessage(): JSON parse error: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"DatabentoRawClient.ProcessSingleMessage(): Error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handles trade messages and converts to LEAN Tick data
+        /// </summary>
+        private async Task HandleTradeMessage(JsonElement root, JsonElement header)
+        {
+            await Task.CompletedTask;
+
+            try
+            {
+                if (!header.TryGetProperty("ts_event", out var tsElement) ||
+                    !header.TryGetProperty("instrument_id", out var instIdElement))
+                {
                     return;
                 }
 
-                BaseData? data = null;
+                // Convert timestamp from nanoseconds to DateTime
+                var timestampNs = long.Parse(tsElement.GetString()!);
+                var unixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                var timestamp = unixEpoch.AddTicks(timestampNs / 100);
 
-                // Check if this is trade data or quote data based on available fields
-                if (subscription.tickType == TickType.Trade)
+                var instrumentId = instIdElement.GetInt64();
+
+                if (!_instrumentIdToSymbol.TryGetValue(instrumentId, out var matchedSymbol))
                 {
-                    if (root.TryGetProperty("price", out var priceElement) && 
-                        root.TryGetProperty("size", out var sizeElement))
+                    // Fallback for safety, though symbol mapping should be reliable
+                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId}, attempting fallback.");
+                    return;
+                }
+
+                // Extract trade data
+                if (root.TryGetProperty("action", out var actionElement) &&
+                    root.TryGetProperty("price", out var priceElement) &&
+                    root.TryGetProperty("size", out var sizeElement))
+                {
+                    var action = actionElement.GetString();
+                    var priceRaw = long.Parse(priceElement.GetString()!);
+                    var size = sizeElement.GetInt32();
+                    var price = priceRaw * PriceScaleFactor;
+
+                    if (action == "T") // Trade
                     {
-                        // This is trade data
-                        data = new Tick
+                        var tradeTick = new Tick
                         {
-                            Symbol = leanSymbol,
+                            Symbol = matchedSymbol,
                             Time = timestamp,
-                            Value = priceElement.GetDecimal(),
-                            Quantity = sizeElement.GetDecimal(),
+                            Value = price,
+                            Quantity = size,
                             TickType = TickType.Trade
                         };
+                        Log.Trace($"DatabentoRawClient: Trade tick: {matchedSymbol} @ {price} x {size} at {timestamp}");
+                        DataReceived?.Invoke(this, tradeTick);
                     }
-                    else if (root.TryGetProperty("open", out var openElement) &&
-                             root.TryGetProperty("high", out var highElement) &&
-                             root.TryGetProperty("low", out var lowElement) &&
-                             root.TryGetProperty("close", out var closeElement) &&
-                             root.TryGetProperty("volume", out var volumeElement))
+                    else if (action == "A" || action == "M" || action == "C") // Add, Modify, or Clear
                     {
-                        // This is OHLCV bar data
-                        data = new TradeBar
+                        if (root.TryGetProperty("side", out var sideElement))
                         {
-                            Symbol = leanSymbol,
-                            Time = timestamp,
-                            Open = openElement.GetDecimal(),
-                            High = highElement.GetDecimal(),
-                            Low = lowElement.GetDecimal(),
-                            Close = closeElement.GetDecimal(),
-                            Volume = volumeElement.GetDecimal()
-                        };
-                    }
-                }
-                else if (subscription.tickType == TickType.Quote)
-                {
-                    if (root.TryGetProperty("bid_px_00", out var bidPriceElement) &&
-                        root.TryGetProperty("ask_px_00", out var askPriceElement) &&
-                        root.TryGetProperty("bid_sz_00", out var bidSizeElement) &&
-                        root.TryGetProperty("ask_sz_00", out var askSizeElement))
-                    {
-                        var bidPrice = bidPriceElement.GetInt64() * PriceScaleFactor;
-                        var askPrice = askPriceElement.GetInt64() * PriceScaleFactor;
+                            var side = sideElement.GetString();
+                            var lastTick = _lastTicks.GetOrAdd(matchedSymbol, symbol => new Tick { Symbol = symbol, TickType = TickType.Quote });
 
-                        if (subscription.resolution == Resolution.Tick)
-                        {
-                            data = new Tick
+                            lastTick.Time = timestamp;
+
+                            if (action == "C") // Clear
                             {
-                                Time = timestamp,
-                                Symbol = leanSymbol,
-                                AskPrice = askPrice,
-                                BidPrice = bidPrice,
-                                AskSize = askSizeElement.GetInt32(),
-                                BidSize = bidSizeElement.GetInt32(),
-                                TickType = TickType.Quote
-                            };
-                        }
-                        else
-                        {
-                            var bidBar = new Bar(bidPrice, bidPrice, bidPrice, bidPrice);
-                            var askBar = new Bar(askPrice, askPrice, askPrice, askPrice);
-                            data = new QuoteBar(
-                                timestamp,
-                                leanSymbol,
-                                bidBar,
-                                bidSizeElement.GetInt32(),
-                                askBar,
-                                askSizeElement.GetInt32()
-                            );
+                                if (side == "A") { lastTick.AskPrice = 0; lastTick.AskSize = 0; }
+                                if (side == "B") { lastTick.BidPrice = 0; lastTick.BidSize = 0; }
+                            }
+                            else // Add or Modify
+                            {
+                                if (side == "A") // Ask
+                                {
+                                    lastTick.AskPrice = price;
+                                    lastTick.AskSize = size;
+                                }
+                                else if (side == "B") // Bid
+                                {
+                                    lastTick.BidPrice = price;
+                                    lastTick.BidSize = size;
+                                }
+                            }
+                            
+                            // Create a clone to send to the aggregator
+                            var quoteTick = (Tick)lastTick.Clone();
+                            
+                            Log.Trace($"DatabentoRawClient: Quote tick: {matchedSymbol} Bid={quoteTick.BidPrice}x{quoteTick.BidSize} Ask={quoteTick.AskPrice}x{quoteTick.AskSize}");
+                            DataReceived?.Invoke(this, quoteTick);
                         }
                     }
-                }
-
-                if (data != null)
-                {
-                    DataReceived?.Invoke(this, data);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.HandleDataMessage(): Error handling data message: {ex.Message}");
+                Log.Error($"DatabentoRawClient.HandleTradeMessage(): Error: {ex.Message}");
             }
         }
 
@@ -545,84 +518,17 @@ namespace QuantConnect.Lean.DataSource.DataBento
         {
             if (symbol.SecurityType == SecurityType.Future)
             {
-                // symbol.Value contains the full contract identifier (e.g., ES19Z25)
-                var contractSymbol = symbol.Value;
+                // For DataBento, use the root symbol with .FUT suffix for parent subscription
+                // ES19Z25 -> ES.FUT
+                var value = symbol.Value;
                 
-                Log.Trace($"Original symbol: {contractSymbol}");
+                // Extract root by removing digits and month codes
+                var root = new string(value.TakeWhile(c => !char.IsDigit(c)).ToArray());
                 
-                // Convert LEAN futures format to Databento format
-                // LEAN format: ES19Z25 (root + day + month code + year)
-                // Databento format: ESZ25 (root + month code + year)
-                
-                var databentoSymbol = ConvertToDatabentoFormat(contractSymbol);
-                
-                Log.Trace($"Databento symbol: {databentoSymbol}");
-                return databentoSymbol;
+                return $"{root}.FUT";
             }
-            else
-            {
-                Log.Error($"DatabentoRawClient.MapSymbolToDataBento(): Unsupported symbol type: {symbol.SecurityType}");
-                return "";
-            }
-        }
 
-        /// <summary>
-        /// Converts LEAN futures symbol format to Databento format
-        /// </summary>
-        /// <param name="leanSymbol">LEAN symbol (e.g., ES19Z25)</param>
-        /// <returns>Databento symbol (e.g., ESZ5)</returns>
-        private string ConvertToDatabentoFormat(string leanSymbol)
-        {
-            // Pattern: ROOT + DAY(1-2 digits) + MONTH_CODE(1 letter) + YEAR(2 digits)
-            // Example: ES19Z25 -> ESZ5
-            // Databento uses single digit year for the 2020s decade
-            
-            // Find the position of the month code (single letter: F,G,H,J,K,M,N,Q,U,V,X,Z)
-            var monthCodes = new[] { 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'Q', 'U', 'V', 'X', 'Z' };
-            
-            for (int i = 0; i < leanSymbol.Length; i++)
-            {
-                if (Array.IndexOf(monthCodes, leanSymbol[i]) >= 0)
-                {
-                    // Found the month code
-                    // Extract root (everything before the digits before month code)
-                    var root = leanSymbol.Substring(0, i);
-                    
-                    // Remove trailing digits from root (the day component)
-                    while (root.Length > 0 && char.IsDigit(root[root.Length - 1]))
-                    {
-                        root = root.Substring(0, root.Length - 1);
-                    }
-                    
-                    // Extract month code
-                    var monthCode = leanSymbol[i];
-                    
-                    // Extract year (last 2 digits)
-                    var yearStr = leanSymbol.Substring(i + 1);
-                    
-                    // Convert to single digit year for Databento format
-                    // 25 -> 5, 24 -> 4, etc.
-                    if (yearStr.Length == 2 && int.TryParse(yearStr, out int year))
-                    {
-                        var singleDigitYear = year % 10;
-                        
-                        // Databento format: ROOT + MONTH_CODE + SINGLE_DIGIT_YEAR
-                        return $"{root}{monthCode}{singleDigitYear}";
-                    }
-                    else if (yearStr.Length == 1)
-                    {
-                        // Already single digit
-                        return $"{root}{monthCode}{yearStr}";
-                    }
-                    
-                    Log.Error($"ConvertToDatabentoFormat(): Invalid year format in {leanSymbol}");
-                    return leanSymbol;
-                }
-            }
-            
-            // If no month code found, return as-is (might already be in correct format)
-            Log.Trace($"ConvertToDatabentoFormat(): No month code found in {leanSymbol}, using as-is");
-            return leanSymbol;
+            return symbol.Value;
         }
 
         /// <summary>
@@ -630,7 +536,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private string GetSchema(Resolution resolution, TickType tickType)
         {
-            if (tickType == TickType.Trade || tickType == TickType.Quote)
+            if (tickType == TickType.Trade)
             {
                 if (resolution == Resolution.Tick)
                     return "trades";
@@ -672,6 +578,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 try
                 {
+                    _reader?.Dispose();
+                    _writer?.Dispose();
                     _stream?.Close();
                     _tcpClient?.Close();
                 }
@@ -697,6 +605,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
             Disconnect();
 
             _cancellationTokenSource?.Dispose();
+            _reader?.Dispose();
+            _writer?.Dispose();
             _stream?.Dispose();
             _tcpClient?.Dispose();
         }
