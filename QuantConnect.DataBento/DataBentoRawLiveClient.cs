@@ -221,11 +221,20 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 // subscribe
                 var subscribeMessage = $"schema={schema}|stype_in=parent|symbols={databentoSymbol}";
                 Log.Trace($"DatabentoRawClient.Subscribe(): Subscribing with message: {subscribeMessage}");
-                
+
                 _writer.WriteLine(subscribeMessage);
 
                 _subscriptions.TryAdd(symbol, (resolution, tickType));
                 Log.Trace($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} ({databentoSymbol}) at {resolution} resolution for {tickType}");
+
+                // If subscribing to quote ticks, also subscribe to trade ticks
+                if (tickType == TickType.Quote && resolution == Resolution.Tick)
+                {
+                    var tradeSchema = GetSchema(resolution, TickType.Trade);
+                    var tradeSubscribeMessage = $"schema={tradeSchema}|stype_in=parent|symbols={databentoSymbol}";
+                    Log.Trace($"DatabentoRawClient.Subscribe(): Also subscribing to trades with message: {tradeSubscribeMessage}");
+                    _writer.WriteLine(tradeSubscribeMessage);
+                }
 
                 return true;
             }
@@ -354,7 +363,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     if (headerElement.TryGetProperty("rtype", out var rtypeElement))
                     {
                         var rtype = rtypeElement.GetInt32();
-                        
+
                         if (rtype == 23)
                         {
                             if (root.TryGetProperty("msg", out var msgElement))
@@ -372,15 +381,13 @@ namespace QuantConnect.Lean.DataSource.DataBento
                             {
                                 var instrumentId = instId.GetInt64();
                                 var outSymbolStr = outSymbol.GetString();
-                                
+
                                 Log.Trace($"DatabentoRawClient: Symbol mapping: {inSymbol.GetString()} -> {outSymbolStr} (instrument_id: {instrumentId})");
-                                
+
                                 // Find the subscription that matches this symbol
                                 foreach (var kvp in _subscriptions)
                                 {
                                     var leanSymbol = kvp.Key;
-                                    // Check if the DataBento symbol matches our subscription
-                                    // For ES19Z25, the outSymbol might be ESZ25 or similar
                                     if (outSymbolStr != null)
                                     {
                                         _instrumentIdToSymbol[instrumentId] = leanSymbol;
@@ -391,10 +398,22 @@ namespace QuantConnect.Lean.DataSource.DataBento
                             }
                             return;
                         }
-                        else if (rtype == 0 || rtype == 1 || rtype == 160)
+                        else if (rtype == 1)
                         {
-                            // Trade data or MBO
-                            await HandleTradeMessage(root, headerElement);
+                            // MBP-1 (Market By Price) - Quote ticks
+                            await HandleMBPMessage(root, headerElement);
+                            return;
+                        }
+                        else if (rtype == 0 || rtype == 32)
+                        {
+                            // Trade messages - Trade ticks
+                            await HandleTradeTickMessage(root, headerElement);
+                            return;
+                        }
+                        else if (rtype == 32 || rtype == 33 || rtype == 34 || rtype == 35)
+                        {
+                            // OHLCV bar messages
+                            await HandleOHLCVMessage(root, headerElement);
                             return;
                         }
                     }
@@ -415,11 +434,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 Log.Error($"DatabentoRawClient.ProcessSingleMessage(): Error: {ex.Message}");
             }
         }
-
+        
         /// <summary>
-        /// Handles trade messages and converts to LEAN Tick data
+        /// Handles OHLCV messages and converts to LEAN TradeBar data
         /// </summary>
-        private async Task HandleTradeMessage(JsonElement root, JsonElement header)
+        private async Task HandleOHLCVMessage(JsonElement root, JsonElement header)
         {
             await Task.CompletedTask;
 
@@ -440,74 +459,198 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 if (!_instrumentIdToSymbol.TryGetValue(instrumentId, out var matchedSymbol))
                 {
-                    // Fallback for safety, though symbol mapping should be reliable
-                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId}, attempting fallback.");
+                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId} in OHLCV message.");
                     return;
                 }
 
-                // Extract trade data
-                if (root.TryGetProperty("action", out var actionElement) &&
-                    root.TryGetProperty("price", out var priceElement) &&
-                    root.TryGetProperty("size", out var sizeElement))
+                // Get the resolution for this symbol
+                if (!_subscriptions.TryGetValue(matchedSymbol, out var subscription))
                 {
-                    var action = actionElement.GetString();
-                    var priceRaw = long.Parse(priceElement.GetString()!);
-                    var size = sizeElement.GetInt32();
-                    var price = priceRaw * PriceScaleFactor;
+                    return;
+                }
 
-                    if (action == "T") // Trade
+                var resolution = subscription.Item1;
+
+                // Extract OHLCV data
+                if (root.TryGetProperty("open", out var openElement) &&
+                    root.TryGetProperty("high", out var highElement) &&
+                    root.TryGetProperty("low", out var lowElement) &&
+                    root.TryGetProperty("close", out var closeElement) &&
+                    root.TryGetProperty("volume", out var volumeElement))
+                {
+                    // Parse prices
+                    var openRaw = long.Parse(openElement.GetString()!);
+                    var highRaw = long.Parse(highElement.GetString()!);
+                    var lowRaw = long.Parse(lowElement.GetString()!);
+                    var closeRaw = long.Parse(closeElement.GetString()!);
+                    var volume = volumeElement.GetInt64();
+
+                    var open = openRaw * PriceScaleFactor;
+                    var high = highRaw * PriceScaleFactor;
+                    var low = lowRaw * PriceScaleFactor;
+                    var close = closeRaw * PriceScaleFactor;
+
+                    // Determine the period based on resolution
+                    TimeSpan period = resolution switch
                     {
-                        var tradeTick = new Tick
-                        {
-                            Symbol = matchedSymbol,
-                            Time = timestamp,
-                            Value = price,
-                            Quantity = size,
-                            TickType = TickType.Trade
-                        };
-                        Log.Trace($"DatabentoRawClient: Trade tick: {matchedSymbol} @ {price} x {size} at {timestamp}");
-                        DataReceived?.Invoke(this, tradeTick);
-                    }
-                    else if (action == "A" || action == "M" || action == "C") // Add, Modify, or Clear
-                    {
-                        if (root.TryGetProperty("side", out var sideElement))
-                        {
-                            var side = sideElement.GetString();
-                            var lastTick = _lastTicks.GetOrAdd(matchedSymbol, symbol => new Tick { Symbol = symbol, TickType = TickType.Quote });
+                        Resolution.Second => TimeSpan.FromSeconds(1),
+                        Resolution.Minute => TimeSpan.FromMinutes(1),
+                        Resolution.Hour => TimeSpan.FromHours(1),
+                        Resolution.Daily => TimeSpan.FromDays(1),
+                        _ => TimeSpan.FromMinutes(1)
+                    };
 
-                            lastTick.Time = timestamp;
+                    // Create TradeBar
+                    var tradeBar = new TradeBar(
+                        timestamp,
+                        matchedSymbol,
+                        open,
+                        high,
+                        low,
+                        close,
+                        volume,
+                        period
+                    );
 
-                            if (action == "C") // Clear
-                            {
-                                if (side == "A") { lastTick.AskPrice = 0; lastTick.AskSize = 0; }
-                                if (side == "B") { lastTick.BidPrice = 0; lastTick.BidSize = 0; }
-                            }
-                            else // Add or Modify
-                            {
-                                if (side == "A") // Ask
-                                {
-                                    lastTick.AskPrice = price;
-                                    lastTick.AskSize = size;
-                                }
-                                else if (side == "B") // Bid
-                                {
-                                    lastTick.BidPrice = price;
-                                    lastTick.BidSize = size;
-                                }
-                            }
-                            
-                            // Create a clone to send to the aggregator
-                            var quoteTick = (Tick)lastTick.Clone();
-                            
-                            Log.Trace($"DatabentoRawClient: Quote tick: {matchedSymbol} Bid={quoteTick.BidPrice}x{quoteTick.BidSize} Ask={quoteTick.AskPrice}x{quoteTick.AskSize}");
-                            DataReceived?.Invoke(this, quoteTick);
-                        }
-                    }
+                    Log.Trace($"DatabentoRawClient: OHLCV bar: {matchedSymbol} O={open} H={high} L={low} C={close} V={volume} at {timestamp}");
+                    DataReceived?.Invoke(this, tradeBar);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.HandleTradeMessage(): Error: {ex.Message}");
+                Log.Error($"DatabentoRawClient.HandleOHLCVMessage(): Error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handles MBP messages for quote ticks
+        /// </summary>
+        private async Task HandleMBPMessage(JsonElement root, JsonElement header)
+        {
+            await Task.CompletedTask;
+
+            try
+            {
+                if (!header.TryGetProperty("ts_event", out var tsElement) ||
+                    !header.TryGetProperty("instrument_id", out var instIdElement))
+                {
+                    return;
+                }
+
+                // Convert timestamp from nanoseconds to DateTime
+                var timestampNs = long.Parse(tsElement.GetString()!);
+                var unixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                var timestamp = unixEpoch.AddTicks(timestampNs / 100);
+
+                var instrumentId = instIdElement.GetInt64();
+
+                if (!_instrumentIdToSymbol.TryGetValue(instrumentId, out var matchedSymbol))
+                {
+                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId} in MBP message.");
+                    return;
+                }
+
+                // For MBP-1, bid/ask data is in the levels array at index 0
+                if (root.TryGetProperty("levels", out var levelsElement) && 
+                    levelsElement.GetArrayLength() > 0)
+                {
+                    var level0 = levelsElement[0];
+                    
+                    var quoteTick = new Tick
+                    {
+                        Symbol = matchedSymbol,
+                        Time = timestamp,
+                        TickType = TickType.Quote
+                    };
+                    
+                    if (level0.TryGetProperty("ask_px", out var askPxElement) &&
+                        level0.TryGetProperty("ask_sz", out var askSzElement))
+                    {
+                        var askPriceRaw = long.Parse(askPxElement.GetString()!);
+                        quoteTick.AskPrice = askPriceRaw * PriceScaleFactor;
+                        quoteTick.AskSize = askSzElement.GetInt32();
+                    }
+                    
+                    if (level0.TryGetProperty("bid_px", out var bidPxElement) &&
+                        level0.TryGetProperty("bid_sz", out var bidSzElement))
+                    {
+                        var bidPriceRaw = long.Parse(bidPxElement.GetString()!);
+                        quoteTick.BidPrice = bidPriceRaw * PriceScaleFactor;
+                        quoteTick.BidSize = bidSzElement.GetInt32();
+                    }
+                    
+                    // Set the tick value to the mid price
+                    quoteTick.Value = (quoteTick.BidPrice + quoteTick.AskPrice) / 2;
+                    
+                    // QuantConnect convention: Quote ticks should have zero Price and Quantity
+                    quoteTick.Quantity = 0;
+                    
+                    Log.Trace($"DatabentoRawClient: Quote tick: {matchedSymbol} Bid={quoteTick.BidPrice}x{quoteTick.BidSize} Ask={quoteTick.AskPrice}x{quoteTick.AskSize}");
+                    DataReceived?.Invoke(this, quoteTick);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"DatabentoRawClient.HandleMBPMessage(): Error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handles trade tick messages (actual executed transactions)
+        /// </summary>
+        private async Task HandleTradeTickMessage(JsonElement root, JsonElement header)
+        {
+            await Task.CompletedTask;
+
+            try
+            {
+                if (!header.TryGetProperty("ts_event", out var tsElement) ||
+                    !header.TryGetProperty("instrument_id", out var instIdElement))
+                {
+                    return;
+                }
+
+                // Convert timestamp from nanoseconds to DateTime
+                var timestampNs = long.Parse(tsElement.GetString()!);
+                var unixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                var timestamp = unixEpoch.AddTicks(timestampNs / 100);
+
+                var instrumentId = instIdElement.GetInt64();
+
+                if (!_instrumentIdToSymbol.TryGetValue(instrumentId, out var matchedSymbol))
+                {
+                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId} in trade message.");
+                    return;
+                }
+
+                if (root.TryGetProperty("price", out var priceElement) &&
+                    root.TryGetProperty("size", out var sizeElement))
+                {
+                    var priceRaw = long.Parse(priceElement.GetString()!);
+                    var size = sizeElement.GetInt32();
+                    var price = priceRaw * PriceScaleFactor;
+
+                    var tradeTick = new Tick
+                    {
+                        Symbol = matchedSymbol,
+                        Time = timestamp,
+                        Value = price,
+                        Quantity = size,
+                        TickType = TickType.Trade,
+                        // Trade ticks should have zero bid/ask values
+                        BidPrice = 0,
+                        BidSize = 0,
+                        AskPrice = 0,
+                        AskSize = 0
+                    };
+
+                    Log.Trace($"DatabentoRawClient: Trade tick: {matchedSymbol} Price={price} Quantity={size}");
+                    DataReceived?.Invoke(this, tradeTick);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"DatabentoRawClient.HandleTradeTickMessage(): Error: {ex.Message}");
             }
         }
 
