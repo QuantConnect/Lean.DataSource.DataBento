@@ -132,10 +132,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
                             Log.Trace($"DataBentoProvider.SubscribeImpl(): Client is connected, attempting async subscribe for {symbol}");
                             Task.Run(async () =>
                             {
-                                var success = _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
+                                // If the requested resolution is higher than tick, we subscribe to ticks and let the aggregator handle it.
+                                var resolutionToSubscribe = config.Resolution > Resolution.Tick ? Resolution.Tick : config.Resolution;
+                                var success = _client.Subscribe(config.Symbol, resolutionToSubscribe, config.TickType);
                                 if (success)
                                 {
-                                    Log.Trace($"DataBentoProvider.SubscribeImpl(): Successfully subscribed to {config.Symbol}");
+                                    Log.Trace($"DataBentoProvider.SubscribeImpl(): Successfully subscribed to {config.Symbol} at {resolutionToSubscribe} resolution");
                                     
                                     // Start session after first successful subscription
                                     lock (_sessionLock)

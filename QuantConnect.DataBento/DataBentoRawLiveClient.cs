@@ -215,6 +215,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             try
             {
+                // Get the databento symbol form LEAN symbol
+                // Get schema from the resolution
                 var databentoSymbol = MapSymbolToDataBento(symbol);
                 var schema = GetSchema(resolution, tickType);
 
@@ -222,8 +224,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 var subscribeMessage = $"schema={schema}|stype_in=parent|symbols={databentoSymbol}";
                 Log.Trace($"DatabentoRawClient.Subscribe(): Subscribing with message: {subscribeMessage}");
 
+                // Send subscribe message
                 _writer.WriteLine(subscribeMessage);
 
+                // Store subscription
                 _subscriptions.TryAdd(symbol, (resolution, tickType));
                 Log.Trace($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} ({databentoSymbol}) at {resolution} resolution for {tickType}");
 
@@ -404,7 +408,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                             await HandleMBPMessage(root, headerElement);
                             return;
                         }
-                        else if (rtype == 0 || rtype == 32)
+                        else if (rtype == 0)
                         {
                             // Trade messages - Trade ticks
                             await HandleTradeTickMessage(root, headerElement);
@@ -596,7 +600,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
-        /// Handles trade tick messages (actual executed transactions)
+        /// Handles trade tick messages. Aggressor fills
         /// </summary>
         private async Task HandleTradeTickMessage(JsonElement root, JsonElement header)
         {
