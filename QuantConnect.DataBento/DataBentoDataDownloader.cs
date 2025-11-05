@@ -18,6 +18,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Globalization;
 using System.Collections.Generic;
 using CsvHelper;
@@ -50,6 +51,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
         {
             _apiKey = apiKey;
             _httpClient = new HttpClient();
+
+            // Set up HTTP Basic Authentication
+            var credentials = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{_apiKey}:"));
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
         }
 
         public DataBentoDataDownloader()
@@ -73,30 +78,35 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             var dataset = "GLBX.MDP3"; // hard coded for now. Later on can add equities and options with different mapping
             var schema = GetSchema(resolution, tickType);
-            var dbSymbol = MapSymbol(symbol);
+            var dbSymbol = MapSymbolToDataBento(symbol);
 
             // prepare body for Raw HTTP request
             var body = new StringBuilder();
             body.Append($"dataset={dataset}");
             body.Append($"&symbols={dbSymbol}");
             body.Append($"&schema={schema}");
-            body.Append($"&start={startUtc:yyyy-MM-ddTHH:mm:ssZ}");
-            body.Append($"&end={endUtc:yyyy-MM-ddTHH:mm:ssZ}");
-            body.Append("&stype_in=continuous");
+            body.Append($"&start={startUtc:yyyy-MM-ddTHH:mm}");
+            body.Append($"&end={endUtc:yyyy-MM-ddTHH:mm}");
+            body.Append("&stype_in=parent");
             body.Append("&encoding=csv");
 
             var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            "https://hist.databento.com/v0/timeseries.get_range")
+                HttpMethod.Post,
+                "https://hist.databento.com/v0/timeseries.get_range")
             {
                 Content = new StringContent(body.ToString(), Encoding.UTF8, "application/x-www-form-urlencoded")
             };
 
-            // Add API key authentication
-            request.Headers.Add("Authorization", $"Bearer {_apiKey}");
-
             // send the request with the get range url
             var response = _httpClient.Send(request);
+
+            // Add error handling to see the actual error message
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = response.Content.ReadAsStringAsync().Result;
+                throw new HttpRequestException($"DataBento API error ({response.StatusCode}): {errorContent}");
+            }
+
             response.EnsureSuccessStatusCode();
 
             using var stream = response.Content.ReadAsStream();
@@ -105,9 +115,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             if (tickType == TickType.Trade)
             {
-                foreach (var record in csv.GetRecords<DatabentoBar>())
+                if (resolution == Resolution.Tick)
                 {
-                    if (resolution == Resolution.Tick)
+                    // For tick data, use the trades schema which returns individual trades
+                    foreach (var record in csv.GetRecords<DatabentoTrade>())
                     {
                         yield return new Tick
                         {
@@ -117,7 +128,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
                             Quantity = record.Size
                         };
                     }
-                    else
+                }
+                else
+                {
+                    // For aggregated data, use the ohlcv schema which returns bars
+                    foreach (var record in csv.GetRecords<DatabentoBar>())
                     {
                         yield return new TradeBar
                         {
@@ -206,13 +221,20 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
-        /// Map Lean Symbol to Databento symbol string for continous
+        /// Maps a LEAN symbol to DataBento symbol format
         /// </summary>
-        private static string MapSymbol(Symbol symbol)
+        private string MapSymbolToDataBento(Symbol symbol)
         {
             if (symbol.SecurityType == SecurityType.Future)
             {
-                return $"{symbol.ID.Symbol}.v.0";
+                // For DataBento, use the root symbol with .FUT suffix for parent subscription
+                // ES19Z25 -> ES.FUT
+                var value = symbol.Value;
+
+                // Extract root by removing digits and month codes
+                var root = new string(value.TakeWhile(c => !char.IsDigit(c)).ToArray());
+
+                return $"{root}.FUT";
             }
 
             return symbol.Value;
@@ -222,26 +244,62 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// Really used as a map from the http request to then get it in QC data structures
         private class DatabentoBar
         {
-            public DateTime Timestamp { get; set; }
-            public decimal Price { get; set; }
-            public int Size { get; set; }
+            [Name("ts_event")]
+            public long TimestampNanos { get; set; }
+
+            public DateTime Timestamp => DateTimeOffset.FromUnixTimeSeconds(TimestampNanos / 1_000_000_000)
+                .AddTicks((TimestampNanos % 1_000_000_000) / 100).UtcDateTime;
+
+            [Name("open")]
             public decimal Open { get; set; }
+
+            [Name("high")]
             public decimal High { get; set; }
+
+            [Name("low")]
             public decimal Low { get; set; }
+
+            [Name("close")]
             public decimal Close { get; set; }
+
+            [Name("volume")]
             public decimal Volume { get; set; }
+        }
+
+        private class DatabentoTrade
+        {
+            [Name("ts_event")]
+            public long TimestampNanos { get; set; }
+
+            public DateTime Timestamp => DateTimeOffset.FromUnixTimeSeconds(TimestampNanos / 1_000_000_000)
+                .AddTicks((TimestampNanos % 1_000_000_000) / 100).UtcDateTime;
+
+            [Name("price")]
+            public long PriceRaw { get; set; }
+
+            public decimal Price => PriceRaw * PriceScaleFactor;
+
+            [Name("size")]
+            public int Size { get; set; }
         }
 
         private class DatabentoQuote
         {
             [Name("ts_event")]
-            public DateTime Timestamp { get; set; }
+            public long TimestampNanos { get; set; }
+
+            public DateTime Timestamp => DateTimeOffset.FromUnixTimeSeconds(TimestampNanos / 1_000_000_000)
+                .AddTicks((TimestampNanos % 1_000_000_000) / 100).UtcDateTime;
+
             [Name("bid_px_00")]
             public long BidPrice { get; set; }
+
             [Name("bid_sz_00")]
             public int BidSize { get; set; }
+
             [Name("ask_px_00")]
             public long AskPrice { get; set; }
+
             [Name("ask_sz_00")]
             public int AskSize { get; set; }
         }

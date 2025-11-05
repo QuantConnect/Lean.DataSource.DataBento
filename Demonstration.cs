@@ -34,13 +34,12 @@ namespace QuantConnect.Algorithm.CSharp
             Log("Algorithm Initialize");
 
             SetStartDate(2025, 10, 1);
-            SetStartDate(2025, 10, 16);
+            SetEndDate(2025, 10, 16);
             SetCash(100000);
 
             var exp = new DateTime(2025, 12, 19);
             var symbol = QuantConnect.Symbol.CreateFuture("ES", Market.CME, exp);
-            _es = AddFutureContract(symbol, Resolution.Minute, true, 1, true);
-            Log($"_es: {_es}");
+            _es = AddFutureContract(symbol, Resolution.Second, true, 1, true);
         }
 
         public override void OnData(Slice slice)

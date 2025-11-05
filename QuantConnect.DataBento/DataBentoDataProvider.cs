@@ -273,7 +273,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <param name="job">Job we're subscribing for</param>
         public void SetJob(LiveNodePacket job)
         {
-            // Not sure what to do in here.
+            // No action required for DataBento since the job details are not used in the subscription process.
         }
 
         /// <summary>
