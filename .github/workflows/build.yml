@@ -1,0 +1,54 @@
+name: Build & Test
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Liberate disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      - name: Checkout Lean Same Branch
+        id: lean-same-branch
+        uses: actions/checkout@v2
+        continue-on-error: true
+        with:
+          ref: ${{ github.ref }}
+          repository: QuantConnect/Lean
+          path: Lean
+
+      - name: Checkout Lean Master
+        if: steps.lean-same-branch.outcome != 'success'
+        uses: actions/checkout@v2
+        with:
+          repository: QuantConnect/Lean
+          path: Lean
+
+      - name: Move Lean
+        run: mv Lean ../Lean
+
+      - uses: addnab/docker-run-action@v3
+        with:
+          image: quantconnect/lean:foundation
+          options: --workdir /__w/Lean.DataSource.SDK/Lean.DataSource.SDK -v /home/runner/work:/__w
+          shell: bash
+          run: |
+            # BuildDataSource
+            dotnet build ./QuantConnect.DataSource.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1 && \
+            # BuildTests
+            dotnet build ./tests/Tests.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1 && \
+            # Run Tests
+            dotnet test ./tests/bin/Release/net9.0/Tests.dll

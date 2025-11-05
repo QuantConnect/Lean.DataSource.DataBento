@@ -1,0 +1,37 @@
+{
+	"description": "DataBento provides historical and live market data across a variety of exchanges and asset classes.",
+	
+	"platforms-features": [
+		{
+			"Platforms": ["Cloud Platform", "Local Platform", "LEAN CLI"],
+			"Download Data": [0,1,1],
+			"Backtesting": [0,1,1],
+			"Optimization": [0,1,1],
+			"Live Trading":	[0,1,1]
+		}
+	],
+	"data-supported": [ "TradeBar", "QuoteBar" ], 
+	"documentation": "https://databento.com/docs/",
+	"module-specification": {
+		"download": {
+			"data-types": [
+				"Trade",
+				"Quote"
+			],
+			"resolutions": [
+				"Tick",
+				"Second",
+				"Minute",
+				"Hour",
+				"Daily"
+			],
+			"security-types": [
+				"Future"
+			],
+			"markets": [
+				"CME",
+				"Globex"
+			]
+		}
+	}
+}
