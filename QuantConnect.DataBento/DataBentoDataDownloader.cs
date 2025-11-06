@@ -33,15 +33,13 @@ using QuantConnect.Securities;
 namespace QuantConnect.Lean.DataSource.DataBento
 {
     /// <summary>
-    /// Data downloader class for pulling data from Data Provider
+    /// Data downloader for historical data from DataBento's Raw HTTP API
+    /// Converts DataBento data to Lean data types
     /// </summary>
     public class DataBentoDataDownloader : IDataDownloader, IDisposable
     {
-        /// <inheritdoc cref="HttpClient"/>
         private readonly HttpClient _httpClient;
-
         private readonly string _apiKey;
-
         private const decimal PriceScaleFactor = 1e-9m;
 
         /// <summary>
@@ -72,8 +70,6 @@ namespace QuantConnect.Lean.DataSource.DataBento
         {
             var symbol = parameters.Symbol;
             var resolution = parameters.Resolution;
-            var startUtc = parameters.StartUtc;
-            var endUtc = parameters.EndUtc;
             var tickType = parameters.TickType;
 
             var dataset = "GLBX.MDP3"; // hard coded for now. Later on can add equities and options with different mapping
@@ -85,8 +81,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
             body.Append($"dataset={dataset}");
             body.Append($"&symbols={dbSymbol}");
             body.Append($"&schema={schema}");
-            body.Append($"&start={startUtc:yyyy-MM-ddTHH:mm}");
-            body.Append($"&end={endUtc:yyyy-MM-ddTHH:mm}");
+            body.Append($"&start={parameters.StartUtc:yyyy-MM-ddTHH:mm}");
+            body.Append($"&end={parameters.EndUtc:yyyy-MM-ddTHH:mm}");
             body.Append("&stype_in=parent");
             body.Append("&encoding=csv");
 

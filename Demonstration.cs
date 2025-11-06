@@ -22,6 +22,7 @@ using QuantConnect.Data;
 using QuantConnect.Securities.Future;
 using QuantConnect.Util;
 using System;
+using System.Linq;
 
 namespace QuantConnect.Algorithm.CSharp
 {
@@ -39,7 +40,19 @@ namespace QuantConnect.Algorithm.CSharp
 
             var exp = new DateTime(2025, 12, 19);
             var symbol = QuantConnect.Symbol.CreateFuture("ES", Market.CME, exp);
+            //_es = AddFutureContract(symbol, Resolution.Tick, true, 1, true);
             _es = AddFutureContract(symbol, Resolution.Second, true, 1, true);
+            Log($"_es: {_es}");
+
+            var history = History<TradeBar>(_es.Symbol, 10, Resolution.Minute).ToList();
+            
+            Log($"History returned {history.Count} bars");
+            
+            foreach (var bar in history)
+            {
+                Log($"History Bar: {bar.Time} - O:{bar.Open} H:{bar.High} L:{bar.Low} C:{bar.Close} V:{bar.Volume}");
+            }
+            
         }
 
         public override void OnData(Slice slice)
@@ -51,13 +64,13 @@ namespace QuantConnect.Algorithm.CSharp
             }
             
             Log($"OnData: Slice has {slice.Count} data points");
-            
+
             // For Tick resolution, check Ticks collection
             if (slice.Ticks.ContainsKey(_es.Symbol))
             {
                 var ticks = slice.Ticks[_es.Symbol];
                 Log($"Received {ticks.Count} ticks for {_es.Symbol}");
-                
+
                 foreach (var tick in ticks)
                 {
                     if (tick.TickType == TickType.Trade)
@@ -70,12 +83,11 @@ namespace QuantConnect.Algorithm.CSharp
                     }
                 }
             }
-            
-            // These won't have data for Tick resolution
-            if (slice.Bars.ContainsKey(_es.Symbol))
+
+            // Access OHLCV bars
+            foreach (var bar in slice.Bars.Values)
             {
-                var bar = slice.Bars[_es.Symbol];
-                Log($"Bar - O:{bar.Open} H:{bar.High} L:{bar.Low} C:{bar.Close} V:{bar.Volume}");
+                Log($"OHLCV BAR: {bar.Symbol.Value} - O: {bar.Open}, H: {bar.High}, L: {bar.Low}, C: {bar.Close}, V: {bar.Volume}");
             }
         }
     }
