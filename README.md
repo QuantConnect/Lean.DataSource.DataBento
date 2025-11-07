@@ -72,6 +72,6 @@ For detailed information on DataBento's pricing plans, please refer to the [Data
 
 ### License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the Apache License 2.0 — see the [LICENSE](https://github.com/QuantConnect/Lean.DataSource.DataBento/blob/master/LICENSE) file for details.
 
 Happy coding and algorithmic trading!

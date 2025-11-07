@@ -15,8 +15,10 @@
 */
 
 using System;
+using System.Linq;
 using NodaTime;
 using QuantConnect.Data;
+using QuantConnect.Data.Market;
 using QuantConnect.Util;
 using QuantConnect.Interfaces;
 using System.Collections.Generic;
@@ -24,8 +26,7 @@ using QuantConnect.Configuration;
 using QuantConnect.Logging;
 using QuantConnect.Packets;
 using QuantConnect.Securities;
-using System.Threading.Tasks;
-using QuantConnect.Data.Market;
+using System.Collections.Concurrent;
 
 namespace QuantConnect.Lean.DataSource.DataBento
 {
@@ -38,18 +39,16 @@ namespace QuantConnect.Lean.DataSource.DataBento
             Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager"), forceTypeNameOnExisting: false);
         private EventBasedDataQueueHandlerSubscriptionManager _subscriptionManager = null!;
         private readonly List<SubscriptionDataConfig> _activeSubscriptionConfigs = new();
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<Symbol, SubscriptionDataConfig> _subscriptionConfigs = new();
+        private readonly ConcurrentDictionary<Symbol, SubscriptionDataConfig> _subscriptionConfigs = new();
         private DatabentoRawClient _client = null!;
         private readonly string _apiKey;
         private readonly DataBentoDataDownloader _dataDownloader;
-        private bool _unsupportedSecurityTypeMessageLogged;
-        private bool _unsupportedDataTypeMessageLogged;
         private bool _potentialUnsupportedResolutionMessageLogged;
         private bool _sessionStarted = false;
         private readonly object _sessionLock = new object();
         private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
-        private readonly System.Collections.Concurrent.ConcurrentDictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
-        
+        private readonly ConcurrentDictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
+
         /// <summary>
         /// Returns true if we're currently connected to the Data Provider
         /// </summary>
@@ -86,40 +85,39 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private void Initialize()
         {
+            Log.Trace("DataBentoProvider.Initialize(): Starting initialization");
             _subscriptionManager = new EventBasedDataQueueHandlerSubscriptionManager();
             _subscriptionManager.SubscribeImpl = (symbols, tickType) =>
             {
+                Log.Trace($"DataBentoProvider.SubscribeImpl(): Received subscription request for {symbols.Count()} symbols, TickType={tickType}");
                 foreach (var symbol in symbols)
                 {
+                    Log.Trace($"DataBentoProvider.SubscribeImpl(): Processing symbol {symbol}");
                     if (!_subscriptionConfigs.TryGetValue(symbol, out var config))
                     {
-                        continue;
+                        Log.Error($"DataBentoProvider.SubscribeImpl(): No subscription config found for {symbol}");
+                        return false;
                     }
                     if (_client?.IsConnected != true)
                     {
-                        continue;
+                        Log.Error($"DataBentoProvider.SubscribeImpl(): Client is not connected. Cannot subscribe to {symbol}");
+                        return false;
                     }
-                    Task.Run(async () =>
-                    {
-                        // If the requested resolution is higher than tick, we subscribe to ticks and let the aggregator handle it.
-                        var resolutionToSubscribe = config.Resolution > Resolution.Tick ? Resolution.Tick : config.Resolution;
-                        var success = _client.Subscribe(config.Symbol, resolutionToSubscribe, config.TickType);
-                        if (!success)
-                        {
-                            Log.Error($"DataBentoProvider.SubscribeImpl(): Failed to subscribe to live data for {config.Symbol}");
-                            return;
-                        }
 
-                        // Start session once after first successful subscription
-                        lock (_sessionLock)
-                        {
-                            if (!_sessionStarted)
-                            {
-                                _sessionStarted = _client.StartSession();
-                            }
-                        }
-                    });
+                    var resolution = config.Resolution > Resolution.Tick ? Resolution.Tick : config.Resolution;
+                    if (!_client.Subscribe(config.Symbol, resolution, config.TickType))
+                    {
+                        Log.Error($"Failed to subscribe to {config.Symbol}");
+                        return false;
+                    }
+
+                    lock (_sessionLock)
+                    {
+                        if (!_sessionStarted)
+                            _sessionStarted = _client.StartSession();
+                    }
                 }
+
                 return true;
             };
 
@@ -127,28 +125,43 @@ namespace QuantConnect.Lean.DataSource.DataBento
             {
                 foreach (var symbol in symbols)
                 {
-                    if (_client?.IsConnected == true)
+                    Log.Trace($"DataBentoProvider.UnsubscribeImpl(): Processing symbol {symbol}");
+                    if (_client?.IsConnected != true)
                     {
-                        Task.Run(() =>
-                        {
-                            _client.Unsubscribe(symbol);
-                        });
+                        throw new InvalidOperationException($"DataBentoProvider.UnsubscribeImpl(): Client is not connected. Cannot unsubscribe from {symbol}");
                     }
+
+                    _client.Unsubscribe(symbol);
                 }
 
                 return true;
             };
 
             // Initialize the live client
+            Log.Trace("DataBentoProvider.Initialize(): Creating DatabentoRawClient");
             _client = new DatabentoRawClient(_apiKey);
             _client.DataReceived += OnDataReceived;
             _client.ConnectionStatusChanged += OnConnectionStatusChanged;
 
             // Connect to live gateway
-            Task.Run(async () =>
+            Log.Trace("DataBentoProvider.Initialize(): Attempting connection to DataBento live gateway");
+            Task.Run(() =>
             {
-                var connected = await _client.ConnectAsync();
+                var connected = _client.Connect();
+                Log.Trace($"DataBentoProvider.Initialize(): Connect() returned {connected}");
+
+                if (connected)
+                {
+                    Log.Trace("DataBentoProvider.Initialize(): Successfully connected to DataBento live gateway");
+                }
+                else
+                {
+                    Log.Error("DataBentoProvider.Initialize(): Failed to connect to DataBento live gateway");
+                }
             });
+
+
+            Log.Trace("DataBentoProvider.Initialize(): Initialization complete");
         }
 
         /// <summary>
@@ -159,7 +172,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <returns>The new enumerator for this subscription request</returns>
         public IEnumerator<BaseData>? Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
         {
-            if (!CanSubscribe(dataConfig)){
+            Log.Trace($"DataBentoProvider.Subscribe(): Received subscription request for {dataConfig.Symbol}, Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
+            if (!CanSubscribe(dataConfig))
+            {
+                Log.Error($"DataBentoProvider.Subscribe(): Cannot subscribe to {dataConfig.Symbol} with Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
                 return null;
             }
 
@@ -177,11 +193,13 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <param name="dataConfig">Subscription config to be removed</param>
         public void Unsubscribe(SubscriptionDataConfig dataConfig)
         {
+            Log.Trace($"DataBentoProvider.Unsubscribe(): Received unsubscription request for {dataConfig.Symbol}, Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
             _subscriptionConfigs.TryRemove(dataConfig.Symbol, out _);
             _subscriptionManager.Unsubscribe(dataConfig);
             var toRemove = _activeSubscriptionConfigs.FirstOrDefault(c => c.Symbol == dataConfig.Symbol && c.TickType == dataConfig.TickType);
             if (toRemove != null)
             {
+                Log.Trace($"DataBentoProvider.Unsubscribe(): Removing active subscription for {dataConfig.Symbol}, Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
                 _activeSubscriptionConfigs.Remove(toRemove);
             }
             _dataAggregator.Remove(dataConfig);
@@ -214,8 +232,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <returns>An enumerable of BaseData points</returns>
         public IEnumerable<BaseData>? GetHistory(Data.HistoryRequest request)
         {
+            Log.Trace($"DataBentoProvider.GetHistory(): Received history request for {request.Symbol}, Resolution={request.Resolution}, TickType={request.TickType}");
             if (!CanSubscribe(request.Symbol))
             {
+                Log.Error($"DataBentoProvider.GetHistory(): Cannot provide history for {request.Symbol} with Resolution={request.Resolution}, TickType={request.TickType}");
                 return null;
             }
 
@@ -278,11 +298,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
             // Check supported security types
             if (!IsSecurityTypeSupported(securityType))
             {
-                if (!_unsupportedSecurityTypeMessageLogged)
-                {
-                    _unsupportedSecurityTypeMessageLogged = true;
-                }
-                return false;
+                throw new NotSupportedException($"Unsupported security type: {securityType}");
             }
 
             // Check supported data types
@@ -291,11 +307,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 dataType != typeof(Tick) &&
                 dataType != typeof(OpenInterest))
             {
-                if (!_unsupportedDataTypeMessageLogged)
-                {
-                    _unsupportedDataTypeMessageLogged = true;
-                }
-                return false;
+                throw new NotSupportedException($"Unsupported data type: {dataType}");
             }
 
             // Warn about potential limitations for tick data
@@ -303,6 +315,9 @@ namespace QuantConnect.Lean.DataSource.DataBento
             if (!_potentialUnsupportedResolutionMessageLogged)
             {
                 _potentialUnsupportedResolutionMessageLogged = true;
+                Log.Trace("DataBentoDataProvider.IsSupported(): " +
+                    $"Subscription for {securityType}-{dataType}-{tickType}-{resolution} will be attempted. " +
+                    $"An Advanced DataBento subscription plan is required to stream tick data.");
             }
 
             return true;
@@ -337,12 +352,18 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 {
                     tick.Time = GetTickTime(tick.Symbol, tick.Time);
                     _dataAggregator.Update(tick);
+
+                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated tick - Symbol: {tick.Symbol}, " +
+                            $"TickType: {tick.TickType}, Price: {tick.Value}, Quantity: {tick.Quantity}");
                 }
                 else if (data is TradeBar tradeBar)
                 {
                     tradeBar.Time = GetTickTime(tradeBar.Symbol, tradeBar.Time);
                     tradeBar.EndTime = GetTickTime(tradeBar.Symbol, tradeBar.EndTime);
                     _dataAggregator.Update(tradeBar);
+
+                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated TradeBar - Symbol: {tradeBar.Symbol}, " +
+                            $"O:{tradeBar.Open} H:{tradeBar.High} L:{tradeBar.Low} C:{tradeBar.Close} V:{tradeBar.Volume}");
                 }
                 else
                 {
@@ -361,6 +382,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private void OnConnectionStatusChanged(object? sender, bool isConnected)
         {
+            Log.Trace($"DataBentoProvider.OnConnectionStatusChanged(): Connection status changed to: {isConnected}");
+
             if (isConnected)
             {
                 // Reset session flag on reconnection
@@ -368,27 +391,25 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 {
                     _sessionStarted = false;
                 }
-                
-                // Resubscribe to all active subscriptions
-                Task.Run(() =>
+
+                // Resubscribe to all active subscriptions 
+                foreach (var config in _activeSubscriptionConfigs)
                 {
-                    foreach (var config in _activeSubscriptionConfigs)
+                    _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
+                }
+
+                // Start session after resubscribing
+                if (_activeSubscriptionConfigs.Any())
+                {
+                    lock (_sessionLock)
                     {
-                        _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
-                    }
-                    
-                    // Start session after resubscribing
-                    if (_activeSubscriptionConfigs.Any())
-                    {
-                        lock (_sessionLock)
+                        if (!_sessionStarted)
                         {
-                            if (!_sessionStarted)
-                            {
-                                _sessionStarted = _client.StartSession();
-                            }
+                            Log.Trace("DataBentoProvider.OnConnectionStatusChanged(): Starting session after reconnection");
+                            _sessionStarted = _client.StartSession();
                         }
                     }
-                });
+                }
             }
         }
     }

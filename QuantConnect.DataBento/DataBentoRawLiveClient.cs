@@ -19,10 +19,9 @@ using System.IO;
 using System.Text;
 using System.Net.Sockets;
 using System.Security.Cryptography;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Linq;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Logging;
@@ -80,9 +79,9 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Connects to the DataBento live gateway
         /// </summary>
-        public async Task<bool> ConnectAsync()
+        public bool Connect()
         {
-            Log.Trace("DatabentoRawClient.ConnectAsync(): Connecting to DataBento live gateway");
+            Log.Trace("DatabentoRawClient.Connect(): Connecting to DataBento live gateway");
             if (_isConnected || _disposed)
             {
                 return _isConnected;
@@ -95,27 +94,27 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 var port = parts.Length > 1 ? int.Parse(parts[1]) : 13000;
 
                 _tcpClient = new TcpClient();
-                await _tcpClient.ConnectAsync(host, port).ConfigureAwait(false);
+                _tcpClient.Connect(host, port);
                 _stream = _tcpClient.GetStream();
                 _reader = new StreamReader(_stream, Encoding.ASCII);
                 _writer = new StreamWriter(_stream, Encoding.ASCII) { AutoFlush = true };
 
                 // Perform authentication handshake
-                if (await AuthenticateAsync().ConfigureAwait(false))
+                if (Authenticate())
                 {
                     _isConnected = true;
                     ConnectionStatusChanged?.Invoke(this, true);
 
-                    // Start message processing task
-                    _ = Task.Run(() => ProcessMessagesAsync(_cancellationTokenSource.Token));
+                    // Start message processing
+                    ProcessMessages();
 
-                    Log.Trace("DatabentoRawClient.ConnectAsync(): Connected and authenticated to DataBento live gateway");
+                    Log.Trace("DatabentoRawClient.Connect(): Connected and authenticated to DataBento live gateway");
                     return true;
                 }
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.ConnectAsync(): Failed to connect: {ex.Message}");
+                Log.Error($"DatabentoRawClient.Connect(): Failed to connect: {ex.Message}");
                 Disconnect();
             }
 
@@ -125,7 +124,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Authenticates with the DataBento gateway using CRAM-SHA256
         /// </summary>
-        private async Task<bool> AuthenticateAsync()
+        private bool Authenticate()
         {
             if (_reader == null || _writer == null)
                 return false;
@@ -133,23 +132,23 @@ namespace QuantConnect.Lean.DataSource.DataBento
             try
             {
                 // Read greeting and challenge
-                string? versionLine = await _reader.ReadLineAsync();
-                string? cramLine = await _reader.ReadLineAsync();
+                string? versionLine = _reader.ReadLine();
+                string? cramLine = _reader.ReadLine();
 
                 if (string.IsNullOrEmpty(versionLine) || string.IsNullOrEmpty(cramLine))
                 {
-                    Log.Error("DatabentoRawClient.AuthenticateAsync(): Failed to receive greeting or challenge");
+                    Log.Error("DatabentoRawClient.Authenticate(): Failed to receive greeting or challenge");
                     return false;
                 }
 
-                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Version: {versionLine}");
-                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Challenge: {cramLine}");
+                Log.Trace($"DatabentoRawClient.Authenticate(): Version: {versionLine}");
+                Log.Trace($"DatabentoRawClient.Authenticate(): Challenge: {cramLine}");
 
                 // Parse challenge
                 string[] cramParts = cramLine.Split('=');
                 if (cramParts.Length != 2 || cramParts[0] != "cram")
                 {
-                    Log.Error("DatabentoRawClient.AuthenticateAsync(): Invalid challenge format");
+                    Log.Error("DatabentoRawClient.Authenticate(): Invalid challenge format");
                     return false;
                 }
                 string cram = cramParts[1].Trim();
@@ -162,31 +161,31 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 // Send auth message
                 string authMsg = $"auth={authString}|dataset={_dataset}|encoding=json|ts_out=0";
-                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Sending auth");
-                await _writer.WriteLineAsync(authMsg);
+                Log.Trace($"DatabentoRawClient.Authenticate(): Sending auth");
+                _writer.WriteLine(authMsg);
 
                 // Read auth response
-                string? authResp = await _reader.ReadLineAsync();
+                string? authResp = _reader.ReadLine();
                 if (string.IsNullOrEmpty(authResp))
                 {
-                    Log.Error("DatabentoRawClient.AuthenticateAsync(): No authentication response received");
+                    Log.Error("DatabentoRawClient.Authenticate(): No authentication response received");
                     return false;
                 }
 
-                Log.Trace($"DatabentoRawClient.AuthenticateAsync(): Auth response: {authResp}");
+                Log.Trace($"DatabentoRawClient.Authenticate(): Auth response: {authResp}");
 
                 if (!authResp.Contains("success=1"))
                 {
-                    Log.Error($"DatabentoRawClient.AuthenticateAsync(): Authentication failed: {authResp}");
+                    Log.Error($"DatabentoRawClient.Authenticate(): Authentication failed: {authResp}");
                     return false;
                 }
 
-                Log.Trace("DatabentoRawClient.AuthenticateAsync(): Authentication successful");
+                Log.Trace("DatabentoRawClient.Authenticate(): Authentication successful");
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.AuthenticateAsync(): Authentication failed: {ex.Message}");
+                Log.Error($"DatabentoRawClient.Authenticate(): Authentication failed: {ex.Message}");
                 return false;
             }
         }
@@ -296,12 +295,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Processes incoming messages from the DataBento gateway
         /// </summary>
-        private async Task ProcessMessagesAsync(CancellationToken cancellationToken)
+        private void ProcessMessages()
         {
-            Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Starting message processing");
+            Log.Trace("DatabentoRawClient.ProcessMessages(): Starting message processing");
             if (_reader == null)
             {
-                Log.Error("DatabentoRawClient.ProcessMessagesAsync(): No reader available");
+                Log.Error("DatabentoRawClient.ProcessMessages(): No reader available");
                 return;
             }
 
@@ -309,12 +308,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
             try
             {
-                while (!cancellationToken.IsCancellationRequested && IsConnected)
+                while (!_cancellationTokenSource.IsCancellationRequested && IsConnected)
                 {
-                    var line = await _reader.ReadLineAsync();
+                    var line = _reader.ReadLine();
                     if (line == null)
                     {
-                        Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Connection closed by server");
+                        Log.Trace("DatabentoRawClient.ProcessMessages(): Connection closed by server");
                         break;
                     }
 
@@ -324,27 +323,27 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     messageCount++;
                     if (messageCount <= 50 || messageCount % 100 == 0)
                     {
-                        Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Message #{messageCount}: {line.Substring(0, Math.Min(150, line.Length))}...");
+                        Log.Trace($"DatabentoRawClient.ProcessMessages(): Message #{messageCount}: {line.Substring(0, Math.Min(150, line.Length))}...");
                     }
 
-                    await ProcessSingleMessage(line);
+                    ProcessSingleMessage(line);
                 }
             }
             catch (OperationCanceledException)
             {
-                Log.Trace("DatabentoRawClient.ProcessMessagesAsync(): Message processing cancelled");
+                Log.Trace("DatabentoRawClient.ProcessMessages(): Message processing cancelled");
             }
             catch (IOException ex) when (ex.InnerException is SocketException)
             {
-                Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Socket exception: {ex.Message}");
+                Log.Trace($"DatabentoRawClient.ProcessMessages(): Socket exception: {ex.Message}");
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.ProcessMessagesAsync(): Error processing messages: {ex.Message}\n{ex.StackTrace}");
+                Log.Error($"DatabentoRawClient.ProcessMessages(): Error processing messages: {ex.Message}\n{ex.StackTrace}");
             }
             finally
             {
-                Log.Trace($"DatabentoRawClient.ProcessMessagesAsync(): Exiting. Total messages processed: {messageCount}");
+                Log.Trace($"DatabentoRawClient.ProcessMessages(): Exiting. Total messages processed: {messageCount}");
                 Disconnect();
             }
         }
@@ -352,10 +351,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Processes a single message from DataBento
         /// </summary>
-        private async Task ProcessSingleMessage(string message)
+        private void ProcessSingleMessage(string message)
         {
-            await Task.CompletedTask;
-
             try
             {
                 using var document = JsonDocument.Parse(message);
@@ -405,19 +402,19 @@ namespace QuantConnect.Lean.DataSource.DataBento
                         else if (rtype == 1)
                         {
                             // MBP-1 (Market By Price) - Quote ticks
-                            await HandleMBPMessage(root, headerElement);
+                            HandleMBPMessage(root, headerElement);
                             return;
                         }
                         else if (rtype == 0)
                         {
                             // Trade messages - Trade ticks
-                            await HandleTradeTickMessage(root, headerElement);
+                            HandleTradeTickMessage(root, headerElement);
                             return;
                         }
                         else if (rtype == 32 || rtype == 33 || rtype == 34 || rtype == 35)
                         {
                             // OHLCV bar messages
-                            await HandleOHLCVMessage(root, headerElement);
+                            HandleOHLCVMessage(root, headerElement);
                             return;
                         }
                     }
@@ -442,10 +439,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Handles OHLCV messages and converts to LEAN TradeBar data
         /// </summary>
-        private async Task HandleOHLCVMessage(JsonElement root, JsonElement header)
+        private void HandleOHLCVMessage(JsonElement root, JsonElement header)
         {
-            await Task.CompletedTask;
-
             try
             {
                 if (!header.TryGetProperty("ts_event", out var tsElement) ||
@@ -529,10 +524,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Handles MBP messages for quote ticks
         /// </summary>
-        private async Task HandleMBPMessage(JsonElement root, JsonElement header)
+        private void HandleMBPMessage(JsonElement root, JsonElement header)
         {
-            await Task.CompletedTask;
-
             try
             {
                 if (!header.TryGetProperty("ts_event", out var tsElement) ||
@@ -602,10 +595,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Handles trade tick messages. Aggressor fills
         /// </summary>
-        private async Task HandleTradeTickMessage(JsonElement root, JsonElement header)
+        private void HandleTradeTickMessage(JsonElement root, JsonElement header)
         {
-            await Task.CompletedTask;
-
             try
             {
                 if (!header.TryGetProperty("ts_event", out var tsElement) ||

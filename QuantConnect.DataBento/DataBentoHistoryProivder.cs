@@ -27,7 +27,6 @@ using QuantConnect.Interfaces;
 using System.Collections.Generic;
 using QuantConnect.Configuration;
 using QuantConnect.Securities;
-using System.Threading.Tasks;
 using QuantConnect.Data.Consolidators;
 
 namespace QuantConnect.Lean.DataSource.DataBento
