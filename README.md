@@ -4,6 +4,8 @@
 
 [![Build Status](https://github.com/QuantConnect/LeanDataSdk/workflows/Build%20%26%20Test/badge.svg)](https://github.com/QuantConnect/LeanDataSdk/actions?query=workflow%3A%22Build%20%26%20Test%22)
 
+Welcome to the DataBento Library repository! This library, built on .NET 6, provides seamless integration with the QuantConnect LEAN Algorithmic Trading Engine. It empowers users to interact with DaatBento's services to create powerful trading algorithms 
+
 ### Introduction
 
 The Lean Data SDK is a cross-platform template repository for developing custom data types for Lean.
@@ -11,9 +13,11 @@ These data types will be consumed by [QuantConnect](https://www.quantconnect.com
 
 It is composed by example .Net solution for the data type and converter scripts.
 
+DataBento Library is an open-source project written in C#, designed to simplify the process of accessing real-time and historical financial market data. With support for Futures Data across the CME exchange and low latency, it offers a comprehensive solution for algorithmic trading.
+
 ### Prerequisites
 
-The solution targets dotnet 5, for installation instructions please follow [dotnet download](https://dotnet.microsoft.com/download).
+The solution targets dotnet 6, for installation instructions please follow [dotnet download](https://dotnet.microsoft.com/download).
 
 The data downloader and converter script can be developed in different ways: C# executable, Python script, Python Jupyter notebook or even a bash script.
 - The python script should be compatible with python 3.6.8
@@ -21,27 +25,53 @@ The data downloader and converter script can be developed in different ways: C# 
 
 Specifically, the enviroment where these scripts will be run is [quantconnect/research](https://hub.docker.com/repository/docker/quantconnect/research) based on [quantconnect/lean:foundation](https://hub.docker.com/repository/docker/quantconnect/lean).
 
+### DatBento Overview
+DataBento provides real time and historical market data through many powerful and developer-friendly APIs. Currently this implementation uses the Globex dataset to access CME
+exchanges and provide data on CME products. DataBento provides a wide array of datasets, and exchanges for stocks, futures, and options.
+
+### Tutorial
+
+You can use the following command line arguments to launch the [LEAN CLI] (https://github.com/quantConnect/Lean-cli) pip project with DataBento.
+
+#### Downloading data
+```
+lean data download --data-provider-historical DataBento --data-type Trade --resolution Daily --security-type Future --ticker ES --start 20240303 --end 20240404 --databento-api-key <your-key>
+```
+
+#### Backtesting
+```
+lean backtest "My Project" --data-provider-historical DataBento --databento-api-key <your-key>
+```
+
+#### Jupyter Research Notebooks
+```
+lean research "My Project" --data-provider-historical DataBento --databento-api-key <your-key>
+```
+
+#### Live Trading
+```
+lean live deploy "My Project" --data-provider-live DataBento --brokerage "Paper Trading" --databento-api-key <your-key>
+```
+
 ### Installation
 
-The "Use this template" feature should be used for each unique data source which requires its own data processing. Once it is cloned locally, you should be able to successfully build the solution, run all tests and execute the downloader and/or conveter scripts. The final version should pass all CI tests of GitHub Actions.
+To contribute to the DataBento API Connector Library for .NET 6 within QuantConnect LEAN, follow these steps:
+ - Obtain API Key: Visit [DataBento] (https://databento.com/) and sign up for an API key.
+ - Fork the Project: Fork the repository by clicking the "Fork" button at the top right of the GitHub page.
+ - Clone Your Forked Repository:
 
-Once ready, please contact support@quantconnect.com and we will create a listing in the QuantConnect Data Market for your company and link to your public repository and commit hash. 
+Configure your project by
+ - Set the databento-api-key in your QuantConnect configuration (config.json or environment variables).
 
-### Datasets Vendor Requirements
+### Documentation
+Refer to the [documentation] (https://databento.com/docs/) for detailed information on the library's functions, parameters, and usage examples.
 
-Key requirements for new vendors include:
+### Price Plan
 
- - A well-defined dataset with a clear and static vision for the data to minimize churn or changes as people will be building systems from it. This is easiest with "raw" data (e.g. sunshine hours vs a sentiment algorithm)
- - Robust ticker and security links to ensure the tickers are tracked well through time, or accurately point in time. ISIN, FIGI, or point in time ticker supported
- - Robust funding to ensure viable for at least 1 year
- - Robust API to ensure reliable up-time. No dead links on site or and 502 servers while using API
- - Consistent delivery schedule, on time and in time for market trading
- - Consistent data format with notifications and lead time on data format updates
- - At least 1 year of historical point in time data
- - Survivorship bias free data
- - Good documentation for the dataset
+For detailed information on DataBento's pricing plans, please refer to the [DataBento Pricing] (https://databento.com/pricing) page.
 
+### License
 
-### Tutorials
+This project is licensed under the Apache License 2.0 — see the [LICENSE](https://github.com/QuantConnect/Lean.DataSource.DataBento/blob/master/LICENSE) file for details.
 
- - See [Tutorials](https://www.quantconnect.com/docs/v2/our-platform/datasets/contributing-datasets) for a step by step guide for creating a new LEAN Data Source.
+Happy coding and algorithmic trading!

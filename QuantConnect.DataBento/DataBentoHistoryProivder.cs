@@ -27,7 +27,6 @@ using QuantConnect.Interfaces;
 using System.Collections.Generic;
 using QuantConnect.Configuration;
 using QuantConnect.Securities;
-using System.Threading.Tasks;
 using QuantConnect.Data.Consolidators;
 
 namespace QuantConnect.Lean.DataSource.DataBento
@@ -39,35 +38,18 @@ namespace QuantConnect.Lean.DataSource.DataBento
     {
         private int _dataPointCount;
         private DataBentoDataDownloader _dataDownloader;
-
-        /// <summary>
-        /// Indicates whether a error for an invalid start time has been fired, where the start time is greater than or equal to the end time in UTC.
-        /// </summary>
         private volatile bool _invalidStartTimeErrorFired;
-
-        /// <summary>
-        /// Indicates whether an error has been fired due to invalid conditions if the TickType is <seealso cref="TickType.Quote"/> and the <seealso cref="Resolution"/> is greater than one second.
-        /// </summary>
         private volatile bool _invalidTickTypeAndResolutionErrorFired;
-
-        /// <summary>
-        /// Indicates whether unsupported tick type message has been logged
-        /// </summary>
         private volatile bool _unsupportedTickTypeMessagedLogged;
-
-        /// <summary>
-        /// Market hours database instance
-        /// </summary>
         private MarketHoursDatabase _marketHoursDatabase;
-
+        private bool _unsupportedSecurityTypeMessageLogged;
+        private bool _unsupportedDataTypeMessageLogged;
+        private bool _potentialUnsupportedResolutionMessageLogged;
+        
         /// <summary>
         /// Gets the total number of data points emitted by this history provider
         /// </summary>
         public override int DataPointCount => _dataPointCount;
-
-        private bool _unsupportedSecurityTypeMessageLogged;
-        private bool _unsupportedDataTypeMessageLogged;
-        private bool _potentialUnsupportedResolutionMessageLogged;
 
         /// <summary>
         /// Initializes this history provider to work for the specified job
