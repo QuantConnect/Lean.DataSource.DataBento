@@ -14,14 +14,12 @@
  *
 */
 
-using System;
-using System.IO;
 using System.Text;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Collections.Concurrent;
 using System.Text.Json;
-using System.Linq;
+using System.Threading.Tasks;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Logging;
@@ -31,33 +29,44 @@ namespace QuantConnect.Lean.DataSource.DataBento
     /// <summary>
     /// DataBento Raw TCP client for live streaming data
     /// </summary>
-    public class DatabentoRawClient : IDisposable
+    public class DataBentoRawLiveClient : IDisposable
     {
+        /// <summary>
+        /// The DataBento API key for authentication
+        /// </summary>
         private readonly string _apiKey;
-        private readonly string _gateway;
+        /// <summary>
+        /// The DataBento live gateway address to receive data from
+        /// </summary>
+        private const string _gateway = "glbx-mdp3.lsg.databento.com:13000";
+        /// <summary> 
+        /// The dataset to subscribe to 
+        /// </summary>
         private readonly string _dataset;
-        private TcpClient? _tcpClient;
+        private readonly TcpClient? _tcpClient;
+        private readonly string _host;
+        private readonly int _port;
         private NetworkStream? _stream;
-        private StreamReader? _reader;
-        private StreamWriter? _writer;
-        private CancellationTokenSource _cancellationTokenSource;
+        private StreamReader _reader;
+        private StreamWriter _writer;
+        private readonly CancellationTokenSource _cancellationTokenSource;
         private readonly ConcurrentDictionary<Symbol, (Resolution, TickType)> _subscriptions;
         private readonly object _connectionLock = new object();
         private bool _isConnected;
         private bool _disposed;
         private const decimal PriceScaleFactor = 1e-9m;
         private readonly ConcurrentDictionary<long, Symbol> _instrumentIdToSymbol = new ConcurrentDictionary<long, Symbol>();
-        private readonly ConcurrentDictionary<Symbol, Tick> _lastTicks = new ConcurrentDictionary<Symbol, Tick>();
+        private readonly DataBentoSymbolMapper _symbolMapper;
 
         /// <summary>
         /// Event fired when new data is received
         /// </summary>
-        public event EventHandler<BaseData>? DataReceived;
+        public event EventHandler<BaseData> DataReceived;
 
         /// <summary>
         /// Event fired when connection status changes
         /// </summary>
-        public event EventHandler<bool>? ConnectionStatusChanged;
+        public event EventHandler<bool> ConnectionStatusChanged;
 
         /// <summary>
         /// Gets whether the client is currently connected
@@ -65,15 +74,21 @@ namespace QuantConnect.Lean.DataSource.DataBento
         public bool IsConnected => _isConnected && _tcpClient?.Connected == true;
 
         /// <summary>
-        /// Initializes a new instance of the DatabentoRawClient
+        /// Initializes a new instance of the DataBentoRawLiveClient
+        /// <param name="apiKey">The DataBento API key.</param>
         /// </summary>
-        public DatabentoRawClient(string apiKey, string gateway = "glbx-mdp3.lsg.databento.com:13000", string dataset = "GLBX.MDP3")
+        public DataBentoRawLiveClient(string apiKey, string dataset = "GLBX.MDP3")
         {
             _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
-            _gateway = gateway ?? throw new ArgumentNullException(nameof(gateway));
             _dataset = dataset;
+            _tcpClient = new TcpClient();
             _subscriptions = new ConcurrentDictionary<Symbol, (Resolution, TickType)>();
             _cancellationTokenSource = new CancellationTokenSource();
+            _symbolMapper = new DataBentoSymbolMapper();
+
+            var parts = _gateway.Split(':');
+            _host = parts[0];
+            _port = parts.Length > 1 ? int.Parse(parts[1]) : 13000;
         }
 
         /// <summary>
@@ -81,20 +96,15 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         public bool Connect()
         {
-            Log.Trace("DatabentoRawClient.Connect(): Connecting to DataBento live gateway");
-            if (_isConnected || _disposed)
+            Log.Trace("DataBentoRawLiveClient.Connect(): Connecting to DataBento live gateway");
+            if (_isConnected)
             {
                 return _isConnected;
             }
 
             try
             {
-                var parts = _gateway.Split(':');
-                var host = parts[0];
-                var port = parts.Length > 1 ? int.Parse(parts[1]) : 13000;
-
-                _tcpClient = new TcpClient();
-                _tcpClient.Connect(host, port);
+                _tcpClient.Connect(_host, _port);
                 _stream = _tcpClient.GetStream();
                 _reader = new StreamReader(_stream, Encoding.ASCII);
                 _writer = new StreamWriter(_stream, Encoding.ASCII) { AutoFlush = true };
@@ -106,15 +116,15 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     ConnectionStatusChanged?.Invoke(this, true);
 
                     // Start message processing
-                    ProcessMessages();
+                    Task.Run(ProcessMessages, _cancellationTokenSource.Token);
 
-                    Log.Trace("DatabentoRawClient.Connect(): Connected and authenticated to DataBento live gateway");
+                    Log.Trace("DataBentoRawLiveClient.Connect(): Connected and authenticated to DataBento live gateway");
                     return true;
                 }
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.Connect(): Failed to connect: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.Connect(): Failed to connect: {ex.Message}");
                 Disconnect();
             }
 
@@ -126,124 +136,97 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private bool Authenticate()
         {
-            if (_reader == null || _writer == null)
-                return false;
-
             try
             {
                 // Read greeting and challenge
-                string? versionLine = _reader.ReadLine();
-                string? cramLine = _reader.ReadLine();
+                var versionLine = _reader.ReadLine();
+                var cramLine = _reader.ReadLine();
 
                 if (string.IsNullOrEmpty(versionLine) || string.IsNullOrEmpty(cramLine))
                 {
-                    Log.Error("DatabentoRawClient.Authenticate(): Failed to receive greeting or challenge");
+                    Log.Error("DataBentoRawLiveClient.Authenticate(): Failed to receive greeting or challenge");
                     return false;
                 }
-
-                Log.Trace($"DatabentoRawClient.Authenticate(): Version: {versionLine}");
-                Log.Trace($"DatabentoRawClient.Authenticate(): Challenge: {cramLine}");
 
                 // Parse challenge
-                string[] cramParts = cramLine.Split('=');
+                var cramParts = cramLine.Split('=');
                 if (cramParts.Length != 2 || cramParts[0] != "cram")
                 {
-                    Log.Error("DatabentoRawClient.Authenticate(): Invalid challenge format");
+                    Log.Error("DataBentoRawLiveClient.Authenticate(): Invalid challenge format");
                     return false;
                 }
-                string cram = cramParts[1].Trim();
+                var cram = cramParts[1].Trim();
 
-                // Compute auth hash
-                string concat = $"{cram}|{_apiKey}";
-                string hashHex = ComputeSHA256(concat);
-                string bucketId = _apiKey.Length >= 5 ? _apiKey.Substring(_apiKey.Length - 5) : _apiKey;
-                string authString = $"{hashHex}-{bucketId}";
-
-                // Send auth message
-                string authMsg = $"auth={authString}|dataset={_dataset}|encoding=json|ts_out=0";
-                Log.Trace($"DatabentoRawClient.Authenticate(): Sending auth");
-                _writer.WriteLine(authMsg);
-
-                // Read auth response
-                string? authResp = _reader.ReadLine();
-                if (string.IsNullOrEmpty(authResp))
-                {
-                    Log.Error("DatabentoRawClient.Authenticate(): No authentication response received");
-                    return false;
-                }
-
-                Log.Trace($"DatabentoRawClient.Authenticate(): Auth response: {authResp}");
-
+                // Auth
+                _writer.WriteLine($"auth={GetAuthStringFromCram(cram)}|dataset={_dataset}|encoding=json|ts_out=0");
+                var authResp = _reader.ReadLine();
                 if (!authResp.Contains("success=1"))
                 {
-                    Log.Error($"DatabentoRawClient.Authenticate(): Authentication failed: {authResp}");
+                    Log.Error($"DataBentoRawLiveClient.Authenticate(): Authentication failed: {authResp}");
                     return false;
                 }
 
-                Log.Trace("DatabentoRawClient.Authenticate(): Authentication successful");
+                Log.Trace("DataBentoRawLiveClient.Authenticate(): Authentication successful");
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.Authenticate(): Authentication failed: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.Authenticate(): Authentication failed: {ex.Message}");
                 return false;
             }
         }
-        private static string ComputeSHA256(string input)
+
+        /// <summary>
+        /// Handles the DataBento authentication string from a CRAM challenge
+        /// </summary>
+        /// <param name="cram">The CRAM challenge string</param>
+        /// <returns>The auth string to send to the server</returns>
+        private string GetAuthStringFromCram(string cram)
         {
-            using var sha = SHA256.Create();
-            byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
-            var sb = new StringBuilder();
-            foreach (byte b in hash)
-            {
-                sb.Append(b.ToString("x2"));
-            }
-            return sb.ToString();
+            if (string.IsNullOrWhiteSpace(cram))
+                throw new ArgumentException("CRAM challenge cannot be null or empty", nameof(cram));
+
+            string concat = $"{cram}|{_apiKey}";
+            string hashHex = ComputeSHA256(concat);
+            string bucketId = _apiKey.Substring(_apiKey.Length - 5);
+
+            return $"{hashHex}-{bucketId}";
         }
 
         /// <summary>
         /// Subscribes to live data for a symbol
         /// </summary>
-        public bool Subscribe(Symbol symbol, Resolution resolution, TickType tickType)
+        public bool Subscribe(Symbol symbol, TickType tickType)
         {
-            if (!IsConnected || _writer == null)
+            if (!IsConnected)
             {
-                Log.Error("DatabentoRawClient.Subscribe(): Not connected to gateway");
+                Log.Error("DataBentoRawLiveClient.Subscribe(): Not connected to gateway");
                 return false;
             }
 
             try
             {
                 // Get the databento symbol form LEAN symbol
-                // Get schema from the resolution
-                var databentoSymbol = MapSymbolToDataBento(symbol);
-                var schema = GetSchema(resolution, tickType);
+                var databentoSymbol = _symbolMapper.GetBrokerageSymbol(symbol);
+                var schema = "mbp-1";
+                var resolution = Resolution.Tick;
 
                 // subscribe
                 var subscribeMessage = $"schema={schema}|stype_in=parent|symbols={databentoSymbol}";
-                Log.Trace($"DatabentoRawClient.Subscribe(): Subscribing with message: {subscribeMessage}");
+                Log.Debug($"DataBentoRawLiveClient.Subscribe(): Subscribing with message: {subscribeMessage}");
 
                 // Send subscribe message
                 _writer.WriteLine(subscribeMessage);
 
                 // Store subscription
                 _subscriptions.TryAdd(symbol, (resolution, tickType));
-                Log.Trace($"DatabentoRawClient.Subscribe(): Subscribed to {symbol} ({databentoSymbol}) at {resolution} resolution for {tickType}");
-
-                // If subscribing to quote ticks, also subscribe to trade ticks
-                if (tickType == TickType.Quote && resolution == Resolution.Tick)
-                {
-                    var tradeSchema = GetSchema(resolution, TickType.Trade);
-                    var tradeSubscribeMessage = $"schema={tradeSchema}|stype_in=parent|symbols={databentoSymbol}";
-                    Log.Trace($"DatabentoRawClient.Subscribe(): Also subscribing to trades with message: {tradeSubscribeMessage}");
-                    _writer.WriteLine(tradeSubscribeMessage);
-                }
+                Log.Debug($"DataBentoRawLiveClient.Subscribe(): Subscribed to {symbol} ({databentoSymbol}) at {resolution} resolution for {tickType}");
 
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.Subscribe(): Failed to subscribe to {symbol}: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.Subscribe(): Failed to subscribe to {symbol}: {ex.Message}");
                 return false;
             }
         }
@@ -253,21 +236,21 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         public bool StartSession()
         {
-            if (!IsConnected || _writer == null)
+            if (!IsConnected)
             {
-                Log.Error("DatabentoRawClient.StartSession(): Not connected");
+                Log.Error("DataBentoRawLiveClient.StartSession(): Not connected");
                 return false;
             }
 
             try
             {
-                Log.Trace("DatabentoRawClient.StartSession(): Starting session");
+                Log.Trace("DataBentoRawLiveClient.StartSession(): Starting session");
                 _writer.WriteLine("start_session=1");
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.StartSession(): Failed to start session: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.StartSession(): Failed to start session: {ex.Message}");
                 return false;
             }
         }
@@ -281,13 +264,13 @@ namespace QuantConnect.Lean.DataSource.DataBento
             {
                 if (_subscriptions.TryRemove(symbol, out _))
                 {
-                    Log.Trace($"DatabentoRawClient.Unsubscribe(): Unsubscribed from {symbol}");
+                    Log.Debug($"DataBentoRawLiveClient.Unsubscribe(): Unsubscribed from {symbol}");
                 }
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.Unsubscribe(): Failed to unsubscribe from {symbol}: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.Unsubscribe(): Failed to unsubscribe from {symbol}: {ex.Message}");
                 return false;
             }
         }
@@ -297,33 +280,17 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         private void ProcessMessages()
         {
-            Log.Trace("DatabentoRawClient.ProcessMessages(): Starting message processing");
-            if (_reader == null)
-            {
-                Log.Error("DatabentoRawClient.ProcessMessages(): No reader available");
-                return;
-            }
-
-            var messageCount = 0;
+            Log.Debug("DataBentoRawLiveClient.ProcessMessages(): Starting message processing");
 
             try
             {
                 while (!_cancellationTokenSource.IsCancellationRequested && IsConnected)
                 {
                     var line = _reader.ReadLine();
-                    if (line == null)
-                    {
-                        Log.Trace("DatabentoRawClient.ProcessMessages(): Connection closed by server");
-                        break;
-                    }
-
                     if (string.IsNullOrWhiteSpace(line))
-                        continue;
-
-                    messageCount++;
-                    if (messageCount <= 50 || messageCount % 100 == 0)
                     {
-                        Log.Trace($"DatabentoRawClient.ProcessMessages(): Message #{messageCount}: {line.Substring(0, Math.Min(150, line.Length))}...");
+                        Log.Trace("DataBentoRawLiveClient.ProcessMessages(): Line is null or empty. Issue receiving data.");
+                        break;
                     }
 
                     ProcessSingleMessage(line);
@@ -331,19 +298,18 @@ namespace QuantConnect.Lean.DataSource.DataBento
             }
             catch (OperationCanceledException)
             {
-                Log.Trace("DatabentoRawClient.ProcessMessages(): Message processing cancelled");
+                Log.Trace("DataBentoRawLiveClient.ProcessMessages(): Message processing cancelled");
             }
             catch (IOException ex) when (ex.InnerException is SocketException)
             {
-                Log.Trace($"DatabentoRawClient.ProcessMessages(): Socket exception: {ex.Message}");
+                Log.Trace($"DataBentoRawLiveClient.ProcessMessages(): Socket exception: {ex.Message}");
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.ProcessMessages(): Error processing messages: {ex.Message}\n{ex.StackTrace}");
+                Log.Error($"DataBentoRawLiveClient.ProcessMessages(): Error processing messages: {ex.Message}\n{ex.StackTrace}");
             }
             finally
             {
-                Log.Trace($"DatabentoRawClient.ProcessMessages(): Exiting. Total messages processed: {messageCount}");
                 Disconnect();
             }
         }
@@ -365,57 +331,71 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     {
                         var rtype = rtypeElement.GetInt32();
 
-                        if (rtype == 23)
+                        switch (rtype)
                         {
-                            if (root.TryGetProperty("msg", out var msgElement))
-                            {
-                                Log.Trace($"DatabentoRawClient: System message: {msgElement.GetString()}");
-                            }
-                            return;
-                        }
-                        else if (rtype == 22)
-                        {
-                            // Symbol mapping message
-                            if (root.TryGetProperty("stype_in_symbol", out var inSymbol) &&
-                                root.TryGetProperty("stype_out_symbol", out var outSymbol) &&
-                                headerElement.TryGetProperty("instrument_id", out var instId))
-                            {
-                                var instrumentId = instId.GetInt64();
-                                var outSymbolStr = outSymbol.GetString();
-
-                                Log.Trace($"DatabentoRawClient: Symbol mapping: {inSymbol.GetString()} -> {outSymbolStr} (instrument_id: {instrumentId})");
-
-                                // Find the subscription that matches this symbol
-                                foreach (var kvp in _subscriptions)
+                            case 23:
+                                // System message
+                                if (root.TryGetProperty("msg", out var msgElement))
                                 {
-                                    var leanSymbol = kvp.Key;
+                                    Log.Debug($"DataBentoRawLiveClient: System message: {msgElement.GetString()}");
+                                }
+                                return;
+
+                            case 22:
+                                // Symbol mapping message
+                                if (root.TryGetProperty("stype_in_symbol", out var inSymbol) &&
+                                    root.TryGetProperty("stype_out_symbol", out var outSymbol) &&
+                                    headerElement.TryGetProperty("instrument_id", out var instId))
+                                {
+                                    var instrumentId = instId.GetInt64();
+                                    var outSymbolStr = outSymbol.GetString();
+
+                                    Log.Debug($"DataBentoRawLiveClient: Symbol mapping: {inSymbol.GetString()} -> {outSymbolStr} (instrument_id: {instrumentId})");
+
                                     if (outSymbolStr != null)
                                     {
-                                        _instrumentIdToSymbol[instrumentId] = leanSymbol;
-                                        Log.Trace($"DatabentoRawClient: Mapped instrument_id {instrumentId} to {leanSymbol}");
-                                        break;
+                                        // Let's find the subscribed symbol to get the market and security type
+                                        var inSymbolStr = inSymbol.GetString();
+                                        var subscription = _subscriptions.Keys.FirstOrDefault(s => _symbolMapper.GetBrokerageSymbol(s) == inSymbolStr);
+                                        if (subscription != null)
+                                        {
+                                            if (subscription.SecurityType == SecurityType.Future)
+                                            {
+                                                var leanSymbol = _symbolMapper.GetLeanSymbolForFuture(outSymbolStr);
+                                                if (leanSymbol == null)
+                                                {
+                                                    Log.Trace($"DataBentoRawLiveClient: Future spreads are not supported: {outSymbolStr}. Skipping mapping.");
+                                                    return;
+                                                }
+                                                _instrumentIdToSymbol[instrumentId] = leanSymbol;
+                                                Log.Debug($"DataBentoRawLiveClient: Mapped instrument_id {instrumentId} to {leanSymbol}");
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                            return;
-                        }
-                        else if (rtype == 1)
-                        {
-                            // MBP-1 (Market By Price) - Quote ticks
-                            HandleMBPMessage(root, headerElement);
-                            return;
-                        }
-                        else if (rtype == 0)
-                        {
-                            // Trade messages - Trade ticks
-                            HandleTradeTickMessage(root, headerElement);
-                            return;
-                        }
-                        else if (rtype == 32 || rtype == 33 || rtype == 34 || rtype == 35)
-                        {
-                            // OHLCV bar messages
-                            HandleOHLCVMessage(root, headerElement);
-                            return;
+                                return;
+
+                            case 1:
+                                // MBP-1 (Market By Price)
+                                HandleMBPMessage(root, headerElement);
+                                return;
+
+                            case 0:
+                                // Trade messages
+                                HandleTradeTickMessage(root, headerElement);
+                                return;
+
+                            case 32:
+                            case 33:
+                            case 34:
+                            case 35:
+                                // OHLCV bar messages
+                                HandleOHLCVMessage(root, headerElement);
+                                return;
+
+                            default:
+                                Log.Error($"DataBentoRawLiveClient: Unknown rtype {rtype} in message");
+                                return;
                         }
                     }
                 }
@@ -423,16 +403,16 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 // Handle other message types if needed
                 if (root.TryGetProperty("error", out var errorElement))
                 {
-                    Log.Error($"DatabentoRawClient: Server error: {errorElement.GetString()}");
+                    Log.Error($"DataBentoRawLiveClient: Server error: {errorElement.GetString()}");
                 }
             }
             catch (JsonException ex)
             {
-                Log.Error($"DatabentoRawClient.ProcessSingleMessage(): JSON parse error: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.ProcessSingleMessage(): JSON parse error: {ex.Message}");
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.ProcessSingleMessage(): Error: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.ProcessSingleMessage(): Error: {ex.Message}");
             }
         }
         
@@ -458,7 +438,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 if (!_instrumentIdToSymbol.TryGetValue(instrumentId, out var matchedSymbol))
                 {
-                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId} in OHLCV message.");
+                    Log.Debug($"DataBentoRawLiveClient: No mapping for instrument_id {instrumentId} in OHLCV message.");
                     return;
                 }
 
@@ -511,13 +491,13 @@ namespace QuantConnect.Lean.DataSource.DataBento
                         period
                     );
 
-                    Log.Trace($"DatabentoRawClient: OHLCV bar: {matchedSymbol} O={open} H={high} L={low} C={close} V={volume} at {timestamp}");
+                    // Log.Trace($"DataBentoRawLiveClient: OHLCV bar: {matchedSymbol} O={open} H={high} L={low} C={close} V={volume} at {timestamp}");
                     DataReceived?.Invoke(this, tradeBar);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.HandleOHLCVMessage(): Error: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.HandleOHLCVMessage(): Error: {ex.Message}");
             }
         }
 
@@ -543,7 +523,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 if (!_instrumentIdToSymbol.TryGetValue(instrumentId, out var matchedSymbol))
                 {
-                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId} in MBP message.");
+                    Log.Trace($"DataBentoRawLiveClient: No mapping for instrument_id {instrumentId} in MBP message.");
                     return;
                 }
 
@@ -582,13 +562,13 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     // QuantConnect convention: Quote ticks should have zero Price and Quantity
                     quoteTick.Quantity = 0;
                     
-                    Log.Trace($"DatabentoRawClient: Quote tick: {matchedSymbol} Bid={quoteTick.BidPrice}x{quoteTick.BidSize} Ask={quoteTick.AskPrice}x{quoteTick.AskSize}");
+                    // Log.Trace($"DataBentoRawLiveClient: Quote tick: {matchedSymbol} Bid={quoteTick.BidPrice}x{quoteTick.BidSize} Ask={quoteTick.AskPrice}x{quoteTick.AskSize}");
                     DataReceived?.Invoke(this, quoteTick);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.HandleMBPMessage(): Error: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.HandleMBPMessage(): Error: {ex.Message}");
             }
         }
 
@@ -614,7 +594,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
 
                 if (!_instrumentIdToSymbol.TryGetValue(instrumentId, out var matchedSymbol))
                 {
-                    Log.Trace($"DatabentoRawClient: No mapping for instrument_id {instrumentId} in trade message.");
+                    Log.Trace($"DataBentoRawLiveClient: No mapping for instrument_id {instrumentId} in trade message.");
                     return;
                 }
 
@@ -639,66 +619,14 @@ namespace QuantConnect.Lean.DataSource.DataBento
                         AskSize = 0
                     };
 
-                    Log.Trace($"DatabentoRawClient: Trade tick: {matchedSymbol} Price={price} Quantity={size}");
+                    // Log.Trace($"DataBentoRawLiveClient: Trade tick: {matchedSymbol} Price={price} Quantity={size}");
                     DataReceived?.Invoke(this, tradeTick);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error($"DatabentoRawClient.HandleTradeTickMessage(): Error: {ex.Message}");
+                Log.Error($"DataBentoRawLiveClient.HandleTradeTickMessage(): Error: {ex.Message}");
             }
-        }
-
-        /// <summary>
-        /// Maps a LEAN symbol to DataBento symbol format
-        /// </summary>
-        private string MapSymbolToDataBento(Symbol symbol)
-        {
-            if (symbol.SecurityType == SecurityType.Future)
-            {
-                // For DataBento, use the root symbol with .FUT suffix for parent subscription
-                // ES19Z25 -> ES.FUT
-                var value = symbol.Value;
-                
-                // Extract root by removing digits and month codes
-                var root = new string(value.TakeWhile(c => !char.IsDigit(c)).ToArray());
-                
-                return $"{root}.FUT";
-            }
-
-            return symbol.Value;
-        }
-
-        /// <summary>
-        /// Pick Databento schema from Lean resolution/ticktype
-        /// </summary>
-        private string GetSchema(Resolution resolution, TickType tickType)
-        {
-            if (tickType == TickType.Trade)
-            {
-                if (resolution == Resolution.Tick)
-                    return "trades";
-                if (resolution == Resolution.Second)
-                    return "ohlcv-1s";
-                if (resolution == Resolution.Minute)
-                    return "ohlcv-1m";
-                if (resolution == Resolution.Hour)
-                    return "ohlcv-1h";
-                if (resolution == Resolution.Daily)
-                    return "ohlcv-1d";
-            }
-            else if (tickType == TickType.Quote)
-            {
-                // top of book
-                if (resolution == Resolution.Tick || resolution == Resolution.Second || resolution == Resolution.Minute || resolution == Resolution.Hour || resolution == Resolution.Daily)
-                    return "mbp-1";
-            }
-            else if (tickType == TickType.OpenInterest)
-            {
-                return "statistics";
-            }
-
-            throw new NotSupportedException($"Unsupported resolution {resolution} / {tickType}");
         }
 
         /// <summary>
@@ -723,11 +651,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 }
                 catch (Exception ex)
                 {
-                    Log.Trace($"DatabentoRawClient.Disconnect(): Error during disconnect: {ex.Message}");
+                    Log.Trace($"DataBentoRawLiveClient.Disconnect(): Error during disconnect: {ex.Message}");
                 }
 
                 ConnectionStatusChanged?.Invoke(this, false);
-                Log.Trace("DatabentoRawClient.Disconnect(): Disconnected from DataBento gateway");
+                Log.Trace("DataBentoRawLiveClient.Disconnect(): Disconnected from DataBento gateway");
             }
         }
 
@@ -748,5 +676,21 @@ namespace QuantConnect.Lean.DataSource.DataBento
             _stream?.Dispose();
             _tcpClient?.Dispose();
         }
+
+        /// <summary>
+        /// Computes the SHA-256 hash of the input string
+        /// </summary>
+        private static string ComputeSHA256(string input)
+        {
+            using var sha = SHA256.Create();
+            var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
+            var sb = new StringBuilder();
+            foreach (byte b in hash)
+            {
+                sb.Append(b.ToString("x2"));
+            }
+            return sb.ToString();
+        }
+
     }
 }

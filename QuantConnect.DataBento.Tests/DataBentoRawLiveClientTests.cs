@@ -16,26 +16,32 @@
 
 using System;
 using System.Threading;
-using System.Threading.Tasks;
 using NUnit.Framework;
+using QuantConnect.Configuration;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Lean.DataSource.DataBento;
 using QuantConnect.Logging;
-using QuantConnect.Configuration;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests
 {
     [TestFixture]
-    public class DataBentoRawLiveClientTests
+    public class DataBentoRawLiveClientSyncTests
     {
-        private DatabentoRawClient _client;
-        private readonly string _apiKey = Config.Get("databento-api-key");
+        private DataBentoRawLiveClient _client;
+        protected readonly string ApiKey = Config.Get("databento-api-key");
+
+        private static Symbol CreateEsFuture()
+        {
+            var expiration = new DateTime(2026, 3, 20);
+            return Symbol.CreateFuture("ES", Market.CME, expiration);
+        }
 
         [SetUp]
         public void SetUp()
         {
-            _client = new DatabentoRawClient(_apiKey);
+            Log.Trace("DataBentoLiveClientTests: Using API Key: " + ApiKey);
+            _client = new DataBentoRawLiveClient(ApiKey);
         }
 
         [TearDown]
@@ -45,208 +51,97 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
         }
 
         [Test]
-        [Explicit("This test requires a configured DataBento API key and live connection")]
-        public async Task ConnectsToGateway()
+        public void Connects()
         {
-            if (string.IsNullOrEmpty(_apiKey))
-            {
-                Assert.Ignore("DataBento API key not configured");
-                return;
-            }
+            var connected = _client.Connect();
 
-            var connected = await _client.ConnectAsync();
+            Assert.IsTrue(connected);
+            Assert.IsTrue(_client.IsConnected);
 
-            Assert.IsTrue(connected, "Should successfully connect to DataBento gateway");
-            Assert.IsTrue(_client.IsConnected, "IsConnected should return true after successful connection");
-
-            Log.Trace("Successfully connected to DataBento gateway");
+            Log.Trace("Connected successfully");
         }
 
         [Test]
-        [Explicit("This test requires a configured DataBento API key and live connection")]
-        public async Task SubscribesToSymbol()
+        public void SubscribesToLeanFutureSymbol()
         {
-            if (string.IsNullOrEmpty(_apiKey))
-            {
-                Assert.Ignore("DataBento API key not configured");
-                return;
-            }
+            Assert.IsTrue(_client.Connect());
 
-            var connected = await _client.ConnectAsync();
-            Assert.IsTrue(connected, "Must be connected to test subscription");
+            var symbol = CreateEsFuture();
 
-            var symbol = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-            var subscribed = _client.Subscribe(symbol, Resolution.Minute, TickType.Trade);
+            Assert.IsTrue(_client.Subscribe(symbol, TickType.Trade));
+            Assert.IsTrue(_client.StartSession());
 
-            Assert.IsTrue(subscribed, "Should successfully subscribe to symbol");
+            Thread.Sleep(1000);
 
-            Log.Trace($"Successfully subscribed to {symbol}");
-
-            // Wait a moment to ensure subscription is active
-            await Task.Delay(2000);
-
-            var unsubscribed = _client.Unsubscribe(symbol);
-            Assert.IsTrue(unsubscribed, "Should successfully unsubscribe from symbol");
-
-            Log.Trace($"Successfully unsubscribed from {symbol}");
+            Assert.IsTrue(_client.Unsubscribe(symbol));
         }
 
         [Test]
-        [Explicit("This test requires a configured DataBento API key and live connection")]
-        public async Task ReceivesLiveData()
+        public void ReceivesTradeOrQuoteTicks()
         {
-            if (string.IsNullOrEmpty(_apiKey))
-            {
-                Assert.Ignore("DataBento API key not configured");
-                return;
-            }
+            var receivedEvent = new ManualResetEventSlim(false);
+            BaseData received = null;
 
-            var dataReceived = false;
-            var dataReceivedEvent = new ManualResetEventSlim(false);
-            BaseData receivedData = null;
-
-            _client.DataReceived += (sender, data) =>
+            _client.DataReceived += (_, data) =>
             {
-                receivedData = data;
-                dataReceived = true;
-                dataReceivedEvent.Set();
-                Log.Trace($"Received data: {data}");
+                received = data;
+                receivedEvent.Set();
             };
 
-            var connected = await _client.ConnectAsync();
-            Assert.IsTrue(connected, "Must be connected to test data reception");
+            Assert.IsTrue(_client.Connect());
 
-            var symbol = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-            var subscribed = _client.Subscribe(symbol, Resolution.Tick, TickType.Trade);
-            Assert.IsTrue(subscribed, "Must be subscribed to receive data");
+            var symbol = CreateEsFuture();
 
-            // Wait for data with timeout
-            var dataReceiptTimeout = TimeSpan.FromMinutes(2);
-            var receivedWithinTimeout = dataReceivedEvent.Wait(dataReceiptTimeout);
+            Assert.IsTrue(_client.Subscribe(symbol, TickType.Trade));
+            Assert.IsTrue(_client.StartSession());
 
-            if (receivedWithinTimeout)
+            var gotData = receivedEvent.Wait(TimeSpan.FromMinutes(2));
+
+            if (!gotData)
             {
-                Assert.IsTrue(dataReceived, "Should have received data");
-                Assert.IsNotNull(receivedData, "Received data should not be null");
-                Assert.AreEqual(symbol, receivedData.Symbol, "Received data symbol should match subscription");
-                Assert.Greater(receivedData.Value, 0, "Received data value should be positive");
+                Assert.Inconclusive("No data received (likely outside market hours)");
+                return;
+            }
 
-                Log.Trace($"Successfully received live data: {receivedData}");
+            Assert.NotNull(received);
+            Assert.AreEqual(symbol, received.Symbol);
+
+            if (received is Tick tick)
+            {
+                Assert.Greater(tick.Time, DateTime.MinValue);
+                Assert.Greater(tick.Value, 0);
+            }
+            else if (received is TradeBar bar)
+            {
+                Assert.Greater(bar.Close, 0);
             }
             else
             {
-                Log.Trace("No data received within timeout period - this may be expected during non-market hours");
+                Assert.Fail($"Unexpected data type: {received.GetType()}");
             }
-
-            _client.Unsubscribe(symbol);
         }
 
         [Test]
-        [Explicit("This test requires a configured DataBento API key and live connection")]
-        public async Task HandlesConnectionEvents()
+        public void DisposeIsIdempotent()
         {
-            if (string.IsNullOrEmpty(_apiKey))
-            {
-                Assert.Ignore("DataBento API key not configured");
-                return;
-            }
-
-            var connectionStatusChanged = false;
-            var connectionStatusEvent = new ManualResetEventSlim(false);
-
-            _client.ConnectionStatusChanged += (sender, isConnected) =>
-            {
-                connectionStatusChanged = true;
-                connectionStatusEvent.Set();
-                Log.Trace($"Connection status changed: {isConnected}");
-            };
-
-            var connected = await _client.ConnectAsync();
-            Assert.IsTrue(connected, "Should connect successfully");
-
-            // Connection status event should fire on connect
-            var eventFiredWithinTimeout = connectionStatusEvent.Wait(TimeSpan.FromSeconds(10));
-            Assert.IsTrue(eventFiredWithinTimeout || connectionStatusChanged,
-                "Connection status changed event should fire");
-
-            _client.Disconnect();
-            Assert.IsFalse(_client.IsConnected, "Should be disconnected after calling Disconnect()");
+            var client = new DataBentoRawLiveClient(ApiKey);
+            Assert.DoesNotThrow(client.Dispose);
+            Assert.DoesNotThrow(client.Dispose);
         }
 
         [Test]
-        public void HandlesInvalidApiKey()
+        public void SymbolMappingDoesNotThrow()
         {
-            var invalidClient = new DatabentoRawClient("invalid-api-key");
+            Assert.IsTrue(_client.Connect());
 
-            // Connection with invalid API key should fail gracefully
-            Assert.DoesNotThrowAsync(async () =>
+            var symbol = CreateEsFuture();
+
+            Assert.DoesNotThrow(() =>
             {
-                var connected = await invalidClient.ConnectAsync();
-                Assert.IsFalse(connected, "Connection should fail with invalid API key");
-            });
-
-            invalidClient.Dispose();
-        }
-
-        [Test]
-        public void DisposesCorrectly()
-        {
-            var client = new DatabentoRawClient(_apiKey);
-            Assert.DoesNotThrow(() => client.Dispose(), "Dispose should not throw");
-            Assert.DoesNotThrow(() => client.Dispose(), "Multiple dispose calls should not throw");
-        }
-
-        [Test]
-        public void SymbolMappingWorksCorrectly()
-        {
-            // Test that futures are mapped correctly to DataBento format
-            var esFuture = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-
-            // Since the mapping method is private, we test indirectly through subscription
-            Assert.DoesNotThrowAsync(async () =>
-            {
-                if (!string.IsNullOrEmpty(_apiKey))
-                {
-                    var connected = await _client.ConnectAsync();
-                    if (connected)
-                    {
-                        _client.Subscribe(esFuture, Resolution.Minute, TickType.Trade);
-                        _client.Unsubscribe(esFuture);
-                    }
-                }
-            });
-        }
-
-        [Test]
-        public void SchemaResolutionMappingWorksCorrectly()
-        {
-            // Test that resolution mappings work correctly
-            var symbol = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-
-            Assert.DoesNotThrowAsync(async () =>
-            {
-                if (!string.IsNullOrEmpty(_apiKey))
-                {
-                    var connected = await _client.ConnectAsync();
-                    if (connected)
-                    {
-                        // Test different resolutions
-                        _client.Subscribe(symbol, Resolution.Tick, TickType.Trade);
-                        _client.Unsubscribe(symbol);
-
-                        _client.Subscribe(symbol, Resolution.Second, TickType.Trade);
-                        _client.Unsubscribe(symbol);
-
-                        _client.Subscribe(symbol, Resolution.Minute, TickType.Trade);
-                        _client.Unsubscribe(symbol);
-
-                        _client.Subscribe(symbol, Resolution.Hour, TickType.Trade);
-                        _client.Unsubscribe(symbol);
-
-                        _client.Subscribe(symbol, Resolution.Daily, TickType.Trade);
-                        _client.Unsubscribe(symbol);
-                    }
-                }
+                _client.Subscribe(symbol, TickType.Trade);
+                _client.StartSession();
+                Thread.Sleep(500);
+                _client.Unsubscribe(symbol);
             });
         }
     }

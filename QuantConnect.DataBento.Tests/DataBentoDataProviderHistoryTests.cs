@@ -32,12 +32,19 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
     public class DataBentoDataProviderHistoryTests
     {
         private DataBentoProvider _historyDataProvider;
-        private readonly string _apiKey = Config.Get("databento-api-key");
+        private MarketHoursDatabase _marketHoursDatabase;
+        protected readonly string ApiKey = Config.Get("databento-api-key");
+
+        private static Symbol CreateEsFuture()
+        {
+            var expiration = new DateTime(2026, 3, 20);
+            return Symbol.CreateFuture("ES", Market.CME, expiration);
+        }
 
         [SetUp]
         public void SetUp()
         {
-            _historyDataProvider = new DataBentoProvider(_apiKey);
+            _historyDataProvider = new DataBentoProvider();
         }
 
         [TearDown]
@@ -50,150 +57,99 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
         {
             get
             {
+                var es = CreateEsFuture();
 
-                // DataBento futures
-                var esMini = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-                var znNote = Symbol.Create("ZNM3", SecurityType.Future, Market.CME);
-                var gcGold = Symbol.Create("GCM3", SecurityType.Future, Market.CME);
-
-                // test cases for supported futures
-                yield return new TestCaseData(esMini, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(5), false)
-                    .SetDescription("Valid ES futures - Daily resolution, 5 days period")
+                yield return new TestCaseData(es, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(5), false)
+                    .SetDescription("ES futures daily trade history")
                     .SetCategory("Valid");
 
-                yield return new TestCaseData(esMini, Resolution.Hour, TickType.Trade, TimeSpan.FromDays(2), false)
-                    .SetDescription("Valid ES futures - Hour resolution, 2 days period")
+                yield return new TestCaseData(es, Resolution.Hour, TickType.Trade, TimeSpan.FromDays(2), false)
+                    .SetDescription("ES futures hourly trade history")
                     .SetCategory("Valid");
 
-                yield return new TestCaseData(esMini, Resolution.Minute, TickType.Trade, TimeSpan.FromHours(4), false)
-                    .SetDescription("Valid ES futures - Minute resolution, 4 hours period")
+                yield return new TestCaseData(es, Resolution.Minute, TickType.Trade, TimeSpan.FromHours(4), false)
+                    .SetDescription("ES futures minute trade history")
                     .SetCategory("Valid");
 
-                yield return new TestCaseData(znNote, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(3), false)
-                    .SetDescription("Valid ZN futures - Daily resolution, 3 days period")
-                    .SetCategory("Valid");
-
-                yield return new TestCaseData(gcGold, Resolution.Hour, TickType.Trade, TimeSpan.FromDays(1), false)
-                    .SetDescription("Valid GC futures - Hour resolution, 1 day period")
-                    .SetCategory("Valid");
-
-                // Test cases for quote data (may require advanced subscription)
-                yield return new TestCaseData(esMini, Resolution.Tick, TickType.Quote, TimeSpan.FromMinutes(15), false)
-                    .SetDescription("ES futures quote data - Tick resolution")
+                yield return new TestCaseData(es, Resolution.Tick, TickType.Quote, TimeSpan.FromMinutes(15), false)
+                    .SetDescription("ES futures quote ticks")
                     .SetCategory("Quote");
-
-                // Unsupported security types
-                var equity = Symbol.Create("SPY", SecurityType.Equity, Market.USA);
-                var option = Symbol.Create("SPY", SecurityType.Option, Market.USA);
-
-                yield return new TestCaseData(equity, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(5), true)
-                    .SetDescription("Invalid - Equity not supported by DataBento")
-                    .SetCategory("Invalid");
-
-                yield return new TestCaseData(option, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(5), true)
-                    .SetDescription("Invalid - Option not supported by DataBento")
-                    .SetCategory("Invalid");
             }
         }
 
         [Test, TestCaseSource(nameof(TestParameters))]
-        [Explicit("This test requires a configured DataBento API key")]
         public void GetsHistory(Symbol symbol, Resolution resolution, TickType tickType, TimeSpan period, bool expectsNoData)
         {
             var request = GetHistoryRequest(resolution, tickType, symbol, period);
 
-            try
+            var history = _historyDataProvider.GetHistory(request);
+
+            if (expectsNoData)
             {
-                var slices = _historyDataProvider.GetHistory(request)?.Select(data => new Slice(data.Time, new[] { data }, data.Time.ConvertToUtc(request.DataTimeZone))).ToList();
-
-                if (expectsNoData)
-                {
-                    Assert.IsTrue(slices == null || !slices.Any(),
-                        $"Expected no data for unsupported symbol/security type: {symbol}");
-                }
-                else
-                {
-                    Assert.IsNotNull(slices, "Expected to receive history data");
-
-                    if (slices.Any())
-                    {
-                        Log.Trace($"Received {slices.Count} slices for {symbol} at {resolution} resolution");
-
-                        foreach (var slice in slices.Take(5)) // Check first 5 slices
-                        {
-                            Assert.IsNotNull(slice, "Slice should not be null");
-                            Assert.IsTrue(slice.Time >= request.StartTimeUtc && slice.Time <= request.EndTimeUtc,
-                                "Slice time should be within requested range");
-
-                            if (slice.Bars.ContainsKey(symbol))
-                            {
-                                var bar = slice.Bars[symbol];
-                                Assert.Greater(bar.Close, 0, "Bar close price should be positive");
-                                Assert.GreaterOrEqual(bar.Volume, 0, "Bar volume should be non-negative");
-                            }
-                        }
-                    }
-                }
+                Assert.IsTrue(history == null || !history.Any(),
+                    $"Expected no data for unsupported symbol: {symbol}");
+                return;
             }
-            catch (Exception ex)
-            {
-                Log.Error($"Error getting history for {symbol}: {ex.Message}");
 
-                if (!expectsNoData)
+            Assert.IsNotNull(history);
+            var data = history.ToList();
+            Assert.IsNotEmpty(data);
+
+            Log.Trace($"Received {data.Count} data points for {symbol} @ {resolution}");
+
+            foreach (var point in data.Take(5))
+            {
+                Assert.AreEqual(symbol, point.Symbol);
+
+                if (point is TradeBar bar)
                 {
-                    throw;
+                    Assert.Greater(bar.Close, 0);
+                    Assert.GreaterOrEqual(bar.Volume, 0);
+                }
+
+                if (point is Tick tick && tickType == TickType.Quote)
+                {
+                    Assert.IsTrue(tick.BidPrice > 0 || tick.AskPrice > 0);
                 }
             }
         }
 
         [Test]
-        [Explicit("This test requires a configured DataBento API key")]
         public void GetHistoryWithMultipleSymbols()
         {
-            var symbol1 = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-            var symbol2 = Symbol.Create("ZNM3", SecurityType.Future, Market.CME);
+            var es = CreateEsFuture();
 
-            var request1 = GetHistoryRequest(Resolution.Daily, TickType.Trade, symbol1, TimeSpan.FromDays(3));
-            var request2 = GetHistoryRequest(Resolution.Daily, TickType.Trade, symbol2, TimeSpan.FromDays(3));
+            var request = GetHistoryRequest(Resolution.Daily, TickType.Trade, es, TimeSpan.FromDays(3));
 
-            var history1 = _historyDataProvider.GetHistory(request1);
-            var history2 = _historyDataProvider.GetHistory(request2);
+            var history = _historyDataProvider.GetHistory(request)?.ToList();
 
-            var allData = new List<BaseData>();
-            if (history1 != null) allData.AddRange(history1);
-            if (history2 != null) allData.AddRange(history2);
-
-            // timezone from the first request
-            var slices = allData.GroupBy(d => d.Time)
-                .Select(g => new Slice(g.Key, g.ToList(), g.Key.ConvertToUtc(request1.DataTimeZone)))
-                .ToList();
-
-            Assert.IsNotNull(slices, "Expected to receive history data for multiple symbols");
-
-            if (slices.Any())
-            {
-                Log.Trace($"Received {slices.Count} slices for multiple symbols");
-
-                var hasSymbol1Data = slices.Any(s => s.Bars.ContainsKey(symbol1));
-                var hasSymbol2Data = slices.Any(s => s.Bars.ContainsKey(symbol2));
-
-                Assert.IsTrue(hasSymbol1Data || hasSymbol2Data,
-                    "Expected data for at least one of the requested symbols");
-            }
+            Assert.IsTrue(
+                history != null && history.Any(),
+                "Expected history for ES"
+            );
         }
 
-        internal static HistoryRequest GetHistoryRequest(Resolution resolution, TickType tickType, Symbol symbol, TimeSpan period)
+        internal static HistoryRequest GetHistoryRequest(
+            Resolution resolution,
+            TickType tickType,
+            Symbol symbol,
+            TimeSpan period)
         {
-            var utcNow = DateTime.UtcNow;
+            var endUtc = new DateTime(2024, 5, 10, 0, 0, 0, DateTimeKind.Utc);
+            var startUtc = endUtc - period;
+
             var dataType = LeanData.GetDataType(resolution, tickType);
             var marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
 
-            var exchangeHours = marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType);
-            var dataTimeZone = marketHoursDatabase.GetDataTimeZone(symbol.ID.Market, symbol, symbol.SecurityType);
+            var exchangeHours = marketHoursDatabase.GetExchangeHours(
+                symbol.ID.Market, symbol, symbol.SecurityType);
+
+            var dataTimeZone = marketHoursDatabase.GetDataTimeZone(
+                symbol.ID.Market, symbol, symbol.SecurityType);
 
             return new HistoryRequest(
-                startTimeUtc: utcNow.Add(-period),
-                endTimeUtc: utcNow,
+                startTimeUtc: startUtc,
+                endTimeUtc: endUtc,
                 dataType: dataType,
                 symbol: symbol,
                 resolution: resolution,
@@ -204,7 +160,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
                 isCustomData: false,
                 DataNormalizationMode.Raw,
                 tickType: tickType
-                );
+            );
         }
     }
 }

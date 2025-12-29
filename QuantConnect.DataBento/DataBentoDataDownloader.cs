@@ -15,19 +15,19 @@
 */
 
 using System;
-using System.IO;
-using System.Text;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Globalization;
 using System.Collections.Generic;
+using System.Globalization;
+using NodaTime;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
 using CsvHelper;
-using CsvHelper.Configuration.Attributes;
+using QuantConnect.Configuration;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
+using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Util;
-using QuantConnect.Configuration;
-using QuantConnect.Interfaces;
 using QuantConnect.Securities;
 
 namespace QuantConnect.Lean.DataSource.DataBento
@@ -38,32 +38,28 @@ namespace QuantConnect.Lean.DataSource.DataBento
     /// </summary>
     public class DataBentoDataDownloader : IDataDownloader, IDisposable
     {
-        private readonly HttpClient _httpClient;
+        private readonly HttpClient _httpClient = new();
         private readonly string _apiKey;
-        private const decimal PriceScaleFactor = 1e-9m;
+        private readonly DataBentoSymbolMapper _symbolMapper;
+        private readonly MarketHoursDatabase _marketHoursDatabase;
+        private readonly Dictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DataBentoDataDownloader"/>
         /// </summary>
-        public DataBentoDataDownloader(string apiKey)
+        /// <param name="apiKey">The DataBento API key.</param>
+        public DataBentoDataDownloader(string apiKey, MarketHoursDatabase marketHoursDatabase)
         {
+            _marketHoursDatabase = marketHoursDatabase;
             _apiKey = apiKey;
-            _httpClient = new HttpClient();
-
-            // Set up HTTP Basic Authentication
-            var credentials = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{_apiKey}:"));
-            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
-        }
-
-        public DataBentoDataDownloader()
-            : this(Config.Get("databento-api-key"))
-        {
+            _httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{_apiKey}:")));
+            _symbolMapper = new DataBentoSymbolMapper();
         }
 
         /// <summary>
         /// Get historical data enumerable for a single symbol, type and resolution given this start and end time (in UTC).
         /// </summary>
-        /// <param name="dataDownloaderGetParameters">Parameters for the historical data request</param>
+        /// <param name="parameters">Parameters for the historical data request</param>
         /// <returns>Enumerable of base data for this symbol</returns>
         /// <exception cref="NotImplementedException"></exception>
         public IEnumerable<BaseData> Get(DataDownloaderGetParameters parameters)
@@ -72,25 +68,29 @@ namespace QuantConnect.Lean.DataSource.DataBento
             var resolution = parameters.Resolution;
             var tickType = parameters.TickType;
 
-            var dataset = "GLBX.MDP3"; // hard coded for now. Later on can add equities and options with different mapping
+            /// <summary>
+            /// Dataset for CME Globex futures
+            /// https://databento.com/docs/venues-and-datasets has more information on datasets through DataBento
+            /// </summary>
+            const string dataset = "GLBX.MDP3"; // hard coded for now. Later on can add equities and options with different mapping
             var schema = GetSchema(resolution, tickType);
-            var dbSymbol = MapSymbolToDataBento(symbol);
+            var databentoSymbol = _symbolMapper.GetBrokerageSymbol(symbol);
 
             // prepare body for Raw HTTP request
-            var body = new StringBuilder();
-            body.Append($"dataset={dataset}");
-            body.Append($"&symbols={dbSymbol}");
-            body.Append($"&schema={schema}");
-            body.Append($"&start={parameters.StartUtc:yyyy-MM-ddTHH:mm}");
-            body.Append($"&end={parameters.EndUtc:yyyy-MM-ddTHH:mm}");
-            body.Append("&stype_in=parent");
-            body.Append("&encoding=csv");
+            var body = new StringBuilder()
+                .Append($"dataset={dataset}")
+                .Append($"&symbols={databentoSymbol}")
+                .Append($"&schema={schema}")
+                .Append($"&start={parameters.StartUtc:yyyy-MM-ddTHH:mm}")
+                .Append($"&end={parameters.EndUtc:yyyy-MM-ddTHH:mm}")
+                .Append("&stype_in=parent")
+                .Append("&encoding=csv")
+                .ToString();
 
-            var request = new HttpRequestMessage(
-                HttpMethod.Post,
+            using var request = new HttpRequestMessage(HttpMethod.Post,
                 "https://hist.databento.com/v0/timeseries.get_range")
             {
-                Content = new StringContent(body.ToString(), Encoding.UTF8, "application/x-www-form-urlencoded")
+                Content = new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded")
             };
 
             // send the request with the get range url
@@ -99,85 +99,70 @@ namespace QuantConnect.Lean.DataSource.DataBento
             // Add error handling to see the actual error message
             if (!response.IsSuccessStatusCode)
             {
-                var errorContent = response.Content.ReadAsStringAsync().Result;
+                var errorContent = response.Content.ReadAsStringAsync().SynchronouslyAwaitTaskResult();
                 throw new HttpRequestException($"DataBento API error ({response.StatusCode}): {errorContent}");
             }
 
-            response.EnsureSuccessStatusCode();
+            using var csv = new CsvReader(
+                new StreamReader(response.Content.ReadAsStream()),
+                CultureInfo.InvariantCulture
+            );
 
-            using var stream = response.Content.ReadAsStream();
-            using var reader = new StreamReader(stream);
-            using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
-
-            if (tickType == TickType.Trade)
+            return (tickType, resolution) switch
             {
-                if (resolution == Resolution.Tick)
-                {
-                    // For tick data, use the trades schema which returns individual trades
-                    foreach (var record in csv.GetRecords<DatabentoTrade>())
-                    {
-                        yield return new Tick
-                        {
-                            Time = record.Timestamp,
-                            Symbol = symbol,
-                            Value = record.Price,
-                            Quantity = record.Size
-                        };
-                    }
-                }
-                else
-                {
-                    // For aggregated data, use the ohlcv schema which returns bars
-                    foreach (var record in csv.GetRecords<DatabentoBar>())
-                    {
-                        yield return new TradeBar
-                        {
-                            Symbol = symbol,
-                            Time = record.Timestamp,
-                            Open = record.Open,
-                            High = record.High,
-                            Low = record.Low,
-                            Close = record.Close,
-                            Volume = record.Volume
-                        };
-                    }
-                }
-            }
-            else if (tickType == TickType.Quote)
-            {
-                foreach (var record in csv.GetRecords<DatabentoQuote>())
-                {
-                    var bidPrice = record.BidPrice * PriceScaleFactor;
-                    var askPrice = record.AskPrice * PriceScaleFactor;
-
-                    if (resolution == Resolution.Tick)
-                    {
-                        yield return new Tick
-                        {
-                            Time = record.Timestamp,
-                            Symbol = symbol,
-                            AskPrice = askPrice,
-                            BidPrice = bidPrice,
-                            AskSize = record.AskSize,
-                            BidSize = record.BidSize,
-                            TickType = TickType.Quote
-                        };
-                    }
-                    else
-                    {
-                        var bidBar = new Bar(bidPrice, bidPrice, bidPrice, bidPrice);
-                        var askBar = new Bar(askPrice, askPrice, askPrice, askPrice);
-                        yield return new QuoteBar(
-                            record.Timestamp,
+                (TickType.Trade, Resolution.Tick) =>
+                    csv.ForEach<DatabentoTrade>(dt =>
+                        new Tick(
+                            GetTickTime(symbol, dt.Timestamp),
                             symbol,
-                            bidBar,
-                            record.BidSize,
-                            askBar,
-                            record.AskSize
-                        );
-                    }
-                }
-            }
+                            string.Empty,
+                            string.Empty,
+                            dt.Size,
+                            dt.Price
+                        )
+                    ),
+
+                (TickType.Trade, _) =>
+                    csv.ForEach<DatabentoBar>(bar =>
+                        new TradeBar(
+                            GetTickTime(symbol, bar.Timestamp),
+                            symbol,
+                            bar.Open,
+                            bar.High,
+                            bar.Low,
+                            bar.Close,
+                            bar.Volume
+                        )
+                    ),
+
+                (TickType.Quote, Resolution.Tick) =>
+                    csv.ForEach<DatabentoQuote>(q =>
+                        new Tick(
+                            GetTickTime(symbol, q.Timestamp),
+                            symbol,
+                            bidPrice:  q.BidPrice,
+                            askPrice:  q.AskPrice,
+                            bidSize:   q.BidSize,
+                            askSize:   q.AskSize
+                        )
+                        {
+                            TickType = TickType.Quote
+                        }
+                    ),
+
+                (TickType.Quote, _) =>
+                    csv.ForEach<DatabentoQuote>(q =>
+                        new QuoteBar(
+                            GetTickTime(symbol, q.Timestamp),
+                            symbol,
+                            new Bar(q.BidPrice, q.BidPrice, q.BidPrice, q.BidPrice), q.BidSize,
+                            new Bar(q.AskPrice, q.AskPrice, q.AskPrice, q.AskPrice), q.AskSize
+                        )
+                    ),
+
+                _ => throw new NotSupportedException(
+                    $"Unsupported tickType={tickType} resolution={resolution}")
+            };
         }
 
         /// <summary>
@@ -191,113 +176,60 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <summary>
         /// Pick Databento schema from Lean resolution/ticktype
         /// </summary>
-        private string GetSchema(Resolution resolution, TickType tickType)
+        private static string GetSchema(Resolution resolution, TickType tickType)
         {
-            if (tickType == TickType.Trade)
+            return (tickType, resolution) switch
             {
-                if (resolution == Resolution.Tick)
-                    return "trades";
-                if (resolution == Resolution.Second)
-                    return "ohlcv-1s";
-                if (resolution == Resolution.Minute)
-                    return "ohlcv-1m";
-                if (resolution == Resolution.Hour)
-                    return "ohlcv-1h";
-                if (resolution == Resolution.Daily)
-                    return "ohlcv-1d";
-            }
-            else if (tickType == TickType.Quote)
-            {
-                // top of book
-                if (resolution == Resolution.Tick || resolution == Resolution.Second || resolution == Resolution.Minute || resolution == Resolution.Hour || resolution == Resolution.Daily)
-                    return "mbp-1";
-            }
+                (TickType.Trade, Resolution.Tick)   => "mbp-1",
+                (TickType.Trade, Resolution.Second) => "ohlcv-1s",
+                (TickType.Trade, Resolution.Minute) => "ohlcv-1m",
+                (TickType.Trade, Resolution.Hour)   => "ohlcv-1h",
+                (TickType.Trade, Resolution.Daily)  => "ohlcv-1d",
 
-            throw new NotSupportedException($"Unsupported resolution {resolution} / {tickType}");
+                (TickType.Quote, _) => "mbp-1",
+
+                _ => throw new NotSupportedException(
+                    $"Unsupported resolution {resolution} / {tickType}"
+                )
+            };
         }
 
         /// <summary>
-        /// Maps a LEAN symbol to DataBento symbol format
+        /// Converts the given UTC time into the symbol security exchange time zone
         /// </summary>
-        private string MapSymbolToDataBento(Symbol symbol)
+        private DateTime GetTickTime(Symbol symbol, DateTime utcTime)
         {
-            if (symbol.SecurityType == SecurityType.Future)
+            DateTimeZone exchangeTimeZone;
+            lock (_symbolExchangeTimeZones)
             {
-                // For DataBento, use the root symbol with .FUT suffix for parent subscription
-                // ES19Z25 -> ES.FUT
-                var value = symbol.Value;
+                if (!_symbolExchangeTimeZones.TryGetValue(symbol, out exchangeTimeZone))
+                {
+                    // read the exchange time zone from market-hours-database
+                    if (_marketHoursDatabase.TryGetEntry(symbol.ID.Market, symbol, symbol.SecurityType, out var entry))
+                    {
+                        exchangeTimeZone = entry.ExchangeHours.TimeZone;
+                    }
+                    // If there is no entry for the given Symbol, default to New York
+                    else
+                    {
+                        exchangeTimeZone = TimeZones.NewYork;
+                    }
 
-                // Extract root by removing digits and month codes
-                var root = new string(value.TakeWhile(c => !char.IsDigit(c)).ToArray());
-
-                return $"{root}.FUT";
+                    _symbolExchangeTimeZones.Add(symbol, exchangeTimeZone);
+                }
             }
 
-            return symbol.Value;
+            return utcTime.ConvertFromUtc(exchangeTimeZone);
         }
+    }
+}
 
-        /// Class for parsing trade data from Databento
-        /// Really used as a map from the http request to then get it in QC data structures
-        private class DatabentoBar
-        {
-            [Name("ts_event")]
-            public long TimestampNanos { get; set; }
-
-            public DateTime Timestamp => DateTimeOffset.FromUnixTimeSeconds(TimestampNanos / 1_000_000_000)
-                .AddTicks((TimestampNanos % 1_000_000_000) / 100).UtcDateTime;
-
-            [Name("open")]
-            public decimal Open { get; set; }
-
-            [Name("high")]
-            public decimal High { get; set; }
-
-            [Name("low")]
-            public decimal Low { get; set; }
-
-            [Name("close")]
-            public decimal Close { get; set; }
-
-            [Name("volume")]
-            public decimal Volume { get; set; }
-        }
-
-        private class DatabentoTrade
-        {
-            [Name("ts_event")]
-            public long TimestampNanos { get; set; }
-
-            public DateTime Timestamp => DateTimeOffset.FromUnixTimeSeconds(TimestampNanos / 1_000_000_000)
-                .AddTicks((TimestampNanos % 1_000_000_000) / 100).UtcDateTime;
-
-            [Name("price")]
-            public long PriceRaw { get; set; }
-
-            public decimal Price => PriceRaw * PriceScaleFactor;
-
-            [Name("size")]
-            public int Size { get; set; }
-        }
-
-        private class DatabentoQuote
-        {
-            [Name("ts_event")]
-            public long TimestampNanos { get; set; }
-
-            public DateTime Timestamp => DateTimeOffset.FromUnixTimeSeconds(TimestampNanos / 1_000_000_000)
-                .AddTicks((TimestampNanos % 1_000_000_000) / 100).UtcDateTime;
-
-            [Name("bid_px_00")]
-            public long BidPrice { get; set; }
-
-            [Name("bid_sz_00")]
-            public int BidSize { get; set; }
-
-            [Name("ask_px_00")]
-            public long AskPrice { get; set; }
-
-            [Name("ask_sz_00")]
-            public int AskSize { get; set; }
-        }
+public static class CsvReaderExtensions
+{
+    public static IEnumerable<BaseData> ForEach<T>(
+        this CsvReader csv,
+        Func<T, BaseData> map)
+    {
+        return csv.GetRecords<T>().Select(map).ToList();
     }
 }

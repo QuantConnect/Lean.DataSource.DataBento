@@ -62,22 +62,5 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
             // resets the version among other things
             Globals.Reset();
         }
-
-        private static void SetUp()
-        {
-            Log.LogHandler = new CompositeLogHandler();
-            Log.Trace("TestSetup(): starting...");
-            ReloadConfiguration();
-            Log.DebuggingEnabled = Config.GetBool("debug-mode");
-        }
-
-        private static TestCaseData[] TestParameters
-        {
-            get
-            {
-                SetUp();
-                return new [] { new TestCaseData() };
-            }
-        }
     }
 }

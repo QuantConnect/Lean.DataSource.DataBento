@@ -14,7 +14,6 @@
  *
 */
 
-using System;
 using NodaTime;
 using QuantConnect.Data;
 using QuantConnect.Data.Market;
@@ -22,30 +21,25 @@ using QuantConnect.Lean.Engine.DataFeeds;
 using QuantConnect.Lean.Engine.HistoricalData;
 using QuantConnect.Logging;
 using QuantConnect.Util;
-using QuantConnect.Lean.DataSource.DataBento;
 using QuantConnect.Interfaces;
-using System.Collections.Generic;
-using QuantConnect.Configuration;
 using QuantConnect.Securities;
 using QuantConnect.Data.Consolidators;
 
 namespace QuantConnect.Lean.DataSource.DataBento
 {
     /// <summary>
-    /// DataBento implementation of <see cref="IHistoryProvider"/>
+    /// Impleements a history provider for DataBento historical data.
+    /// Uses consolidators to produce the requested resolution when necessary.
     /// </summary>
-    public partial class DataBentoHistoryProvider : SynchronizingHistoryProvider
+    public partial class DataBentoProvider : SynchronizingHistoryProvider
     {
         private int _dataPointCount;
-        private DataBentoDataDownloader _dataDownloader;
+
+        /// <summary>
+        /// Indicates whether a error for an invalid start time has been fired, where the start time is greater than or equal to the end time in UTC.
+        /// </summary>
         private volatile bool _invalidStartTimeErrorFired;
-        private volatile bool _invalidTickTypeAndResolutionErrorFired;
-        private volatile bool _unsupportedTickTypeMessagedLogged;
-        private MarketHoursDatabase _marketHoursDatabase;
-        private bool _unsupportedSecurityTypeMessageLogged;
-        private bool _unsupportedDataTypeMessageLogged;
-        private bool _potentialUnsupportedResolutionMessageLogged;
-        
+
         /// <summary>
         /// Gets the total number of data points emitted by this history provider
         /// </summary>
@@ -57,8 +51,6 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <param name="parameters">The initialization parameters</param>
         public override void Initialize(HistoryProviderInitializeParameters parameters)
         {
-            _dataDownloader = new DataBentoDataDownloader();
-            _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
         }
 
         /// <summary>
@@ -101,8 +93,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <returns>An enumerable of BaseData points</returns>
         public IEnumerable<BaseData>? GetHistory(HistoryRequest request)
         {
-            if (request.Symbol.IsCanonical() ||
-                !IsSupported(request.Symbol.SecurityType, request.DataType, request.TickType, request.Resolution))
+            if (!CanSubscribe(request.Symbol))
             {
                 // It is Logged in IsSupported(...)
                 return null;
@@ -113,7 +104,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 if (!_unsupportedTickTypeMessagedLogged)
                 {
                     _unsupportedTickTypeMessagedLogged = true;
-                    Log.Trace($"DataBentoHistoryProvider.GetHistory(): Unsupported tick type: {TickType.OpenInterest}");
+                    Log.Trace($"DataBentoProvider.GetHistory(): Unsupported tick type: {TickType.OpenInterest}");
                 }
                 return null;
             }
@@ -123,7 +114,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 if (!_invalidStartTimeErrorFired)
                 {
                     _invalidStartTimeErrorFired = true;
-                    Log.Error($"{nameof(DataBentoHistoryProvider)}.{nameof(GetHistory)}:InvalidDateRange. The history request start date must precede the end date, no history returned");
+                    Log.Error($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}:InvalidDateRange. The history request start date must precede the end date, no history returned");
                 }
                 return null;
             }
@@ -229,60 +220,6 @@ namespace QuantConnect.Lean.DataSource.DataBento
         {
             var parameters = new DataDownloaderGetParameters(request.Symbol, Resolution.Tick, request.StartTimeUtc, request.EndTimeUtc, request.TickType);
             return _dataDownloader.Get(parameters);
-        }
-
-        /// <summary>
-        /// Checks if the security type is supported
-        /// </summary>
-        /// <param name="securityType">Security type to check</param>
-        /// <returns>True if supported</returns>
-        private bool IsSecurityTypeSupported(SecurityType securityType)
-        {
-            // DataBento primarily supports futures, but also has equity and option coverage
-            return securityType == SecurityType.Future;
-        }
-
-        /// <summary>
-        /// Determines if the specified subscription is supported
-        /// </summary>
-        private bool IsSupported(SecurityType securityType, Type dataType, TickType tickType, Resolution resolution)
-        {
-            // Check supported security types
-            if (!IsSecurityTypeSupported(securityType))
-            {
-                if (!_unsupportedSecurityTypeMessageLogged)
-                {
-                    _unsupportedSecurityTypeMessageLogged = true;
-                    Log.Trace($"DataBentoDataProvider.IsSupported(): Unsupported security type: {securityType}");
-                }
-                return false;
-            }
-
-            // Check supported data types
-            if (dataType != typeof(TradeBar) &&
-                dataType != typeof(QuoteBar) &&
-                dataType != typeof(Tick) &&
-                dataType != typeof(OpenInterest))
-            {
-                if (!_unsupportedDataTypeMessageLogged)
-                {
-                    _unsupportedDataTypeMessageLogged = true;
-                    Log.Trace($"DataBentoDataProvider.IsSupported(): Unsupported data type: {dataType}");
-                }
-                return false;
-            }
-
-            // Warn about potential limitations for tick data
-            // I'm mimicing polygon implementation with this
-            if (!_potentialUnsupportedResolutionMessageLogged)
-            {
-                _potentialUnsupportedResolutionMessageLogged = true;
-                Log.Trace("DataBentoDataProvider.IsSupported(): " +
-                    $"Subscription for {securityType}-{dataType}-{tickType}-{resolution} will be attempted. " +
-                    $"An Advanced DataBento subscription plan is required to stream tick data.");
-            }
-
-            return true;
         }
     }
 }
