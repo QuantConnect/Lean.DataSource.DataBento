@@ -101,10 +101,13 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// <returns>An enumerable of BaseData points</returns>
         public IEnumerable<BaseData>? GetHistory(HistoryRequest request)
         {
+            // DIAGNOSTIC: Log that we're being called
+            Log.Trace($"DataBentoHistoryProvider.GetHistory(): Symbol={request.Symbol}, Type={request.DataType}, TickType={request.TickType}, Resolution={request.Resolution}, IsCanonical={request.Symbol.IsCanonical()}, Start={request.StartTimeUtc}, End={request.EndTimeUtc}");
+
             if (request.Symbol.IsCanonical() ||
                 !IsSupported(request.Symbol.SecurityType, request.DataType, request.TickType, request.Resolution))
             {
-                // It is Logged in IsSupported(...)
+                Log.Trace($"DataBentoHistoryProvider.GetHistory(): Rejecting request - IsCanonical={request.Symbol.IsCanonical()}, IsSupported={(request.Symbol.IsCanonical() ? "N/A" : IsSupported(request.Symbol.SecurityType, request.DataType, request.TickType, request.Resolution).ToString())}");
                 return null;
             }
 
