@@ -27,12 +27,14 @@ using QuantConnect.Logging;
 using QuantConnect.Packets;
 using QuantConnect.Securities;
 using System.Collections.Concurrent;
+using System.ComponentModel.Composition;
 
 namespace QuantConnect.Lean.DataSource.DataBento
 {
     /// <summary>
     /// Implementation of Custom Data Provider
     /// </summary>
+    [Export(typeof(IDataQueueHandler))]
     public class DataBentoProvider : IDataQueueHandler
     {
         private readonly IDataAggregator _dataAggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(
@@ -50,6 +52,15 @@ namespace QuantConnect.Lean.DataSource.DataBento
         private readonly ConcurrentDictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
 
         /// <summary>
+        /// Replay start time for intraday historical data.
+        /// - DateTime.MinValue = full replay (start=0, up to 24 hours)
+        /// - Specific DateTime = replay from that time
+        /// - null = live only (no replay) - but we default to 15 min ago if not configured
+        /// Configure via "databento-replay-start" in config.json: "0" for full, ISO datetime for specific, absent for 15-min default
+        /// </summary>
+        private readonly DateTime? _replayStart;
+
+        /// <summary>
         /// Returns true if we're currently connected to the Data Provider
         /// </summary>
         public bool IsConnected => _client?.IsConnected == true;
@@ -64,6 +75,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
             {
                 throw new ArgumentException("DataBento API key is required. Set 'databento-api-key' in configuration.");
             }
+
+            // Parse replay start config: "0" for full replay, ISO datetime for specific, absent for 15-min default
+            var replayStartConfig = Config.Get("databento-replay-start", "");
+            _replayStart = ParseReplayStart(replayStartConfig);
+            Log.Trace($"DataBentoProvider: Replay start configured as: {FormatReplayStart(_replayStart)}");
 
             _dataDownloader = new DataBentoDataDownloader(_apiKey);
             Initialize();
@@ -104,8 +120,10 @@ namespace QuantConnect.Lean.DataSource.DataBento
                         return false;
                     }
 
-                    var resolution = config.Resolution > Resolution.Tick ? Resolution.Tick : config.Resolution;
-                    if (!_client.Subscribe(config.Symbol, resolution, config.TickType))
+                    // Use intraday replay to get historical data at startup
+                    var replayStart = GetEffectiveReplayStart();
+                    Log.Trace($"DataBentoProvider.SubscribeImpl(): Using intraday replay: {FormatReplayStart(replayStart)}");
+                    if (!_client.Subscribe(config.Symbol, config.Resolution, config.TickType, replayStart))
                     {
                         Log.Error($"Failed to subscribe to {config.Symbol}");
                         return false;
@@ -259,14 +277,67 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
+        /// Parses the databento-replay-start config value.
+        /// </summary>
+        /// <param name="configValue">Config value: "0" for full, ISO datetime for specific, empty for default</param>
+        /// <returns>DateTime.MinValue for full replay, specific DateTime, or null for default (15-min lookback)</returns>
+        private static DateTime? ParseReplayStart(string configValue)
+        {
+            if (string.IsNullOrWhiteSpace(configValue))
+            {
+                // Empty/absent = use default (will be calculated as 15 min ago at subscribe time)
+                return null;
+            }
+
+            if (configValue == "0")
+            {
+                // "0" = full intraday replay (sentinel value)
+                return DateTime.MinValue;
+            }
+
+            // Try to parse as ISO datetime
+            if (DateTime.TryParse(configValue, out var parsed))
+            {
+                return parsed.ToUniversalTime();
+            }
+
+            Log.Error($"DataBentoProvider: Invalid databento-replay-start value '{configValue}'. Use '0' for full replay, ISO datetime, or omit for 15-min default.");
+            return null;
+        }
+
+        /// <summary>
+        /// Formats replay start for logging.
+        /// </summary>
+        private static string FormatReplayStart(DateTime? replayStart)
+        {
+            if (!replayStart.HasValue)
+                return "15-minute lookback (default)";
+            if (replayStart.Value == DateTime.MinValue)
+                return "FULL intraday replay (start=0)";
+            return $"from {replayStart.Value:yyyy-MM-ddTHH:mm:ss} UTC";
+        }
+
+        /// <summary>
+        /// Gets the effective replay start time for subscription.
+        /// If _replayStart is null (default), calculates 15 minutes ago.
+        /// </summary>
+        private DateTime? GetEffectiveReplayStart()
+        {
+            if (_replayStart.HasValue)
+                return _replayStart.Value;
+            // Default: 15 minutes ago
+            return DateTime.UtcNow.AddMinutes(-15);
+        }
+
+        /// <summary>
         /// Checks if this Data provider supports the specified symbol
         /// </summary>
         /// <param name="symbol">The symbol</param>
         /// <returns>returns true if Data Provider supports the specified symbol; otherwise false</returns>
         private bool CanSubscribe(Symbol symbol)
         {
+            // Reject universe symbols but allow canonical (continuous) futures
             return !symbol.Value.Contains("universe", StringComparison.InvariantCultureIgnoreCase) &&
-                   !symbol.IsCanonical() &&
                    IsSecurityTypeSupported(symbol.SecurityType);
         }
 
@@ -352,18 +423,26 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 {
                     tick.Time = GetTickTime(tick.Symbol, tick.Time);
                     _dataAggregator.Update(tick);
-
-                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated tick - Symbol: {tick.Symbol}, " +
-                            $"TickType: {tick.TickType}, Price: {tick.Value}, Quantity: {tick.Quantity}");
+                    // Log.Trace removed - too spammy (millions of ticks)
                 }
                 else if (data is TradeBar tradeBar)
                 {
                     tradeBar.Time = GetTickTime(tradeBar.Symbol, tradeBar.Time);
                     tradeBar.EndTime = GetTickTime(tradeBar.Symbol, tradeBar.EndTime);
-                    _dataAggregator.Update(tradeBar);
 
-                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated TradeBar - Symbol: {tradeBar.Symbol}, " +
-                            $"O:{tradeBar.Open} H:{tradeBar.High} L:{tradeBar.Low} C:{tradeBar.Close} V:{tradeBar.Volume}");
+                    // Classify as replay vs live data based on age
+                    // Replay data (from start= parameter) is historical, live data is recent
+                    var now = DateTime.UtcNow;
+                    var dataAgeSeconds = (now - tradeBar.EndTime.ConvertToUtc(TimeZones.Chicago)).TotalSeconds;
+                    var dataType = dataAgeSeconds > 60 ? "REPLAY" : "LIVE";
+
+                    // Log first 10 bars and every 50th bar thereafter
+                    _tradeBarCount++;
+                    if (_tradeBarCount <= 10 || _tradeBarCount % 50 == 0)
+                    {
+                        Log.Trace($"DataBentoProvider.OnDataReceived(): [{dataType}] TradeBar #{_tradeBarCount} for {tradeBar.Symbol} at {tradeBar.Time} (age: {dataAgeSeconds:F0}s)");
+                    }
+                    _dataAggregator.Update(tradeBar);
                 }
                 else
                 {
@@ -376,6 +455,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 Log.Error($"DataBentoProvider.OnDataReceived(): Error updating data aggregator: {ex.Message}\n{ex.StackTrace}");
             }
         }
+
+        private int _tradeBarCount = 0;
 
         /// <summary>
         /// Handles connection status changes from the live client
