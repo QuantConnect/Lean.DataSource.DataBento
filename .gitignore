@@ -63,3 +63,7 @@ build/
 bld/
 [Bb]in/
 [Oo]bj/
+
+# Test artifacts
+test-results/
+test-config.json
