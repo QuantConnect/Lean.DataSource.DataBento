@@ -32,11 +32,18 @@ using System.ComponentModel.Composition;
 namespace QuantConnect.Lean.DataSource.DataBento
 {
     /// <summary>
-    /// Implementation of Custom Data Provider
+    /// Implementation of Custom Data Provider with Universe support for futures contract resolution
     /// </summary>
     [Export(typeof(IDataQueueHandler))]
-    public class DataBentoProvider : IDataQueueHandler
+    public class DataBentoProvider : IDataQueueHandler, IDataQueueUniverseProvider
     {
+        /// <summary>
+        /// Track resolved contracts per canonical symbol.
+        /// When Databento sends symbol mappings (MYM.FUT -> MYMH6), we parse them
+        /// into proper LEAN Symbols and store here so LookupSymbols() can return them.
+        /// </summary>
+        private readonly ConcurrentDictionary<Symbol, HashSet<Symbol>> _resolvedContracts = new();
+
         private readonly IDataAggregator _dataAggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(
             Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager"), forceTypeNameOnExisting: false);
         private EventBasedDataQueueHandlerSubscriptionManager _subscriptionManager = null!;
@@ -160,6 +167,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
             _client = new DatabentoRawClient(_apiKey);
             _client.DataReceived += OnDataReceived;
             _client.ConnectionStatusChanged += OnConnectionStatusChanged;
+            _client.SymbolMappingReceived += OnSymbolMappingReceived;
 
             // Connect to live gateway
             Log.Trace("DataBentoProvider.Initialize(): Attempting connection to DataBento live gateway");
@@ -473,7 +481,7 @@ namespace QuantConnect.Lean.DataSource.DataBento
                     _sessionStarted = false;
                 }
 
-                // Resubscribe to all active subscriptions 
+                // Resubscribe to all active subscriptions
                 foreach (var config in _activeSubscriptionConfigs)
                 {
                     _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
@@ -493,5 +501,80 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 }
             }
         }
+
+        /// <summary>
+        /// Handles symbol mapping events from Databento.
+        /// When Databento resolves a continuous symbol (MYM.FUT) to a specific contract (MYMH6),
+        /// we store the mapping so LEAN's universe selection can find the contract.
+        /// </summary>
+        private void OnSymbolMappingReceived(object? sender, SymbolMappingEventArgs e)
+        {
+            if (e.ContractSymbol == null)
+            {
+                Log.Trace($"DataBentoProvider.OnSymbolMappingReceived(): No contract symbol for {e.DatabentoSymbol} (canonical: {e.CanonicalSymbol})");
+                return;
+            }
+
+            // Add the resolved contract to our tracking dictionary
+            var contracts = _resolvedContracts.GetOrAdd(e.CanonicalSymbol, _ => new HashSet<Symbol>());
+            lock (contracts)
+            {
+                if (contracts.Add(e.ContractSymbol))
+                {
+                    Log.Trace($"DataBentoProvider.OnSymbolMappingReceived(): Resolved {e.CanonicalSymbol} -> {e.ContractSymbol} (from {e.DatabentoSymbol})");
+                }
+            }
+        }
+
+        #region IDataQueueUniverseProvider Implementation
+
+        /// <summary>
+        /// Returns the symbols available for the specified canonical symbol.
+        /// For futures, returns the resolved contracts (e.g., MYMH6 for canonical /MYM).
+        /// </summary>
+        /// <param name="symbol">The canonical symbol to lookup</param>
+        /// <param name="includeExpired">Whether to include expired contracts</param>
+        /// <param name="securityCurrency">Expected security currency (not used)</param>
+        /// <returns>Enumerable of resolved contract Symbols</returns>
+        public IEnumerable<Symbol> LookupSymbols(Symbol symbol, bool includeExpired, string securityCurrency = null)
+        {
+            Log.Trace($"DataBentoProvider.LookupSymbols(): Looking up symbols for {symbol}, includeExpired={includeExpired}");
+
+            if (_resolvedContracts.TryGetValue(symbol, out var contracts))
+            {
+                lock (contracts)
+                {
+                    var contractList = contracts.ToList();
+                    Log.Trace($"DataBentoProvider.LookupSymbols(): Found {contractList.Count} contracts for {symbol}");
+
+                    // If not including expired, filter by expiry date
+                    if (!includeExpired)
+                    {
+                        var now = DateTime.UtcNow.Date;
+                        contractList = contractList.Where(c => c.ID.Date >= now).ToList();
+                        Log.Trace($"DataBentoProvider.LookupSymbols(): After expiry filter: {contractList.Count} contracts");
+                    }
+
+                    return contractList;
+                }
+            }
+
+            Log.Trace($"DataBentoProvider.LookupSymbols(): No contracts found for {symbol}");
+            return Enumerable.Empty<Symbol>();
+        }
+
+        /// <summary>
+        /// Returns whether selection can take place.
+        /// Selection is allowed when we're connected and have resolved at least one contract.
+        /// </summary>
+        /// <returns>True if universe selection can proceed</returns>
+        public bool CanPerformSelection()
+        {
+            var canPerform = IsConnected && _resolvedContracts.Any();
+            Log.Trace($"DataBentoProvider.CanPerformSelection(): {canPerform} (IsConnected={IsConnected}, ResolvedContracts={_resolvedContracts.Count})");
+            return canPerform;
+        }
+
+        #endregion
     }
 }

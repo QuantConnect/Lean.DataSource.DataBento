@@ -60,6 +60,12 @@ namespace QuantConnect.Lean.DataSource.DataBento
         public event EventHandler<bool>? ConnectionStatusChanged;
 
         /// <summary>
+        /// Event fired when a symbol mapping is received from Databento.
+        /// This maps canonical futures symbols to specific contract symbols.
+        /// </summary>
+        public event EventHandler<SymbolMappingEventArgs>? SymbolMappingReceived;
+
+        /// <summary>
         /// Gets whether the client is currently connected
         /// </summary>
         public bool IsConnected => _isConnected && _tcpClient?.Connected == true;
@@ -423,26 +429,45 @@ namespace QuantConnect.Lean.DataSource.DataBento
                         }
                         else if (rtype == 22)
                         {
-                            // Symbol mapping message
+                            // Symbol mapping message - maps continuous (MYM.FUT) to specific contract (MYMH6)
                             if (root.TryGetProperty("stype_in_symbol", out var inSymbol) &&
                                 root.TryGetProperty("stype_out_symbol", out var outSymbol) &&
                                 headerElement.TryGetProperty("instrument_id", out var instId))
                             {
                                 var instrumentId = instId.GetInt64();
                                 var outSymbolStr = outSymbol.GetString();
+                                var inSymbolStr = inSymbol.GetString();
 
-                                Log.Trace($"DatabentoRawClient: Symbol mapping: {inSymbol.GetString()} -> {outSymbolStr} (instrument_id: {instrumentId})");
+                                Log.Trace($"DatabentoRawClient: Symbol mapping: {inSymbolStr} -> {outSymbolStr} (instrument_id: {instrumentId})");
 
-                                // Find the subscription that matches this symbol
+                                // Find the canonical subscription that matches this symbol
+                                Symbol? canonicalSymbol = null;
                                 foreach (var kvp in _subscriptions)
                                 {
-                                    var leanSymbol = kvp.Key;
-                                    if (outSymbolStr != null)
-                                    {
-                                        _instrumentIdToSymbol[instrumentId] = leanSymbol;
-                                        Log.Trace($"DatabentoRawClient: Mapped instrument_id {instrumentId} to {leanSymbol}");
-                                        break;
-                                    }
+                                    canonicalSymbol = kvp.Key;
+                                    break; // Take the first subscription as canonical
+                                }
+
+                                if (canonicalSymbol != null && outSymbolStr != null)
+                                {
+                                    // Parse the Databento symbol to get a proper LEAN contract Symbol
+                                    var contractSymbol = ParseDatabentoContractSymbol(canonicalSymbol, outSymbolStr);
+
+                                    // Store the contract symbol (if parsed) or canonical (as fallback)
+                                    // CRITICAL: Route data to contract symbol, not canonical, so algorithm
+                                    // receives data on tradable contracts (e.g., MYMH6 not just /MYM)
+                                    var symbolToStore = contractSymbol ?? canonicalSymbol;
+                                    _instrumentIdToSymbol[instrumentId] = symbolToStore;
+
+                                    Log.Trace($"DatabentoRawClient: Mapped instrument_id {instrumentId} to {symbolToStore}" +
+                                              (contractSymbol != null ? $" (parsed from {outSymbolStr})" : " (canonical fallback)"));
+
+                                    // Raise event so DataBentoProvider can track resolved contracts
+                                    SymbolMappingReceived?.Invoke(this, new SymbolMappingEventArgs(
+                                        canonicalSymbol,
+                                        outSymbolStr,
+                                        instrumentId,
+                                        contractSymbol));
                                 }
                             }
                             return;
@@ -730,10 +755,120 @@ namespace QuantConnect.Lean.DataSource.DataBento
         }
 
         /// <summary>
+        /// CME month codes: F=Jan, G=Feb, H=Mar, J=Apr, K=May, M=Jun, N=Jul, Q=Aug, U=Sep, V=Oct, X=Nov, Z=Dec
+        /// </summary>
+        private static readonly Dictionary<char, int> MonthCodeToMonth = new()
+        {
+            { 'F', 1 }, { 'G', 2 }, { 'H', 3 }, { 'J', 4 }, { 'K', 5 }, { 'M', 6 },
+            { 'N', 7 }, { 'Q', 8 }, { 'U', 9 }, { 'V', 10 }, { 'X', 11 }, { 'Z', 12 }
+        };
+
+        /// <summary>
         /// CME quarterly month codes: H=Mar, M=Jun, U=Sep, Z=Dec
         /// </summary>
         private static readonly char[] QuarterlyMonthCodes = { 'H', 'M', 'U', 'Z' };
         private static readonly int[] QuarterlyMonths = { 3, 6, 9, 12 };
+
+        /// <summary>
+        /// Parses a Databento contract symbol (e.g., "MYMH6") into a LEAN Symbol.
+        /// Format: ROOT + MONTH_CODE + YEAR (1 or 2 digits)
+        /// Examples: MYMH6 = MYM March 2026, ESZ25 = ES December 2025
+        /// </summary>
+        /// <param name="canonicalSymbol">The canonical LEAN symbol for market reference</param>
+        /// <param name="databentoSymbol">The Databento symbol (e.g., "MYMH6")</param>
+        /// <returns>A LEAN Symbol for the specific contract, or null if parsing fails</returns>
+        public Symbol? ParseDatabentoContractSymbol(Symbol canonicalSymbol, string databentoSymbol)
+        {
+            if (string.IsNullOrEmpty(databentoSymbol))
+                return null;
+
+            // Skip spread symbols (contain "-")
+            if (databentoSymbol.Contains('-'))
+            {
+                Log.Trace($"DatabentoRawClient.ParseDatabentoContractSymbol(): Skipping spread symbol: {databentoSymbol}");
+                return null;
+            }
+
+            try
+            {
+                // Parse format: ROOT + MONTH_CODE + YEAR (e.g., MYMH6, ESZ25)
+                // The month code is a single letter from the set: F,G,H,J,K,M,N,Q,U,V,X,Z
+                // We need to find the month code by searching from the end, since the root
+                // symbol can contain letters that match month codes (e.g., MYM contains M)
+
+                // Find where the digits start from the end
+                int digitStartIndex = databentoSymbol.Length;
+                while (digitStartIndex > 0 && char.IsDigit(databentoSymbol[digitStartIndex - 1]))
+                {
+                    digitStartIndex--;
+                }
+
+                if (digitStartIndex == databentoSymbol.Length || digitStartIndex < 2)
+                {
+                    Log.Trace($"DatabentoRawClient.ParseDatabentoContractSymbol(): Invalid format (no year digits or too short): {databentoSymbol}");
+                    return null;
+                }
+
+                // Month code is the character just before the digits
+                var monthCodeIndex = digitStartIndex - 1;
+                var monthCode = char.ToUpper(databentoSymbol[monthCodeIndex]);
+                if (!MonthCodeToMonth.TryGetValue(monthCode, out var month))
+                {
+                    Log.Error($"DatabentoRawClient.ParseDatabentoContractSymbol(): Unknown month code '{monthCode}' in {databentoSymbol}");
+                    return null;
+                }
+
+                // Root is everything before the month code
+                var root = databentoSymbol.Substring(0, monthCodeIndex);
+                if (string.IsNullOrEmpty(root))
+                {
+                    Log.Trace($"DatabentoRawClient.ParseDatabentoContractSymbol(): Empty root in {databentoSymbol}");
+                    return null;
+                }
+
+                // Year is the digits at the end
+                var yearStr = databentoSymbol.Substring(digitStartIndex);
+                if (!int.TryParse(yearStr, out var yearDigits))
+                {
+                    Log.Error($"DatabentoRawClient.ParseDatabentoContractSymbol(): Invalid year '{yearStr}' in {databentoSymbol}");
+                    return null;
+                }
+
+                // Convert to full year (6 -> 2026, 25 -> 2025)
+                int year;
+                if (yearDigits < 100)
+                {
+                    // Assume 20xx for 2-digit years, handle century boundary
+                    year = yearDigits < 50 ? 2000 + yearDigits : 1900 + yearDigits;
+                    if (yearDigits < 10)
+                    {
+                        // Single digit like "6" means 2026
+                        year = 2020 + yearDigits;
+                    }
+                }
+                else
+                {
+                    year = yearDigits;
+                }
+
+                // Calculate expiry date (3rd Friday of contract month for index futures)
+                var firstDay = new DateTime(year, month, 1);
+                var firstFriday = firstDay.AddDays((DayOfWeek.Friday - firstDay.DayOfWeek + 7) % 7);
+                var thirdFriday = firstFriday.AddDays(14);
+
+                // Create the LEAN Symbol
+                var market = canonicalSymbol.ID.Market;
+                var contractSymbol = Symbol.CreateFuture(root, market, thirdFriday);
+
+                Log.Trace($"DatabentoRawClient.ParseDatabentoContractSymbol(): Parsed {databentoSymbol} -> {contractSymbol} (expiry: {thirdFriday:yyyy-MM-dd})");
+                return contractSymbol;
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"DatabentoRawClient.ParseDatabentoContractSymbol(): Error parsing {databentoSymbol}: {ex.Message}");
+                return null;
+            }
+        }
 
         /// <summary>
         /// Gets the front-month contract symbol for quarterly futures (ES, YM, NQ, etc.)
@@ -853,6 +988,41 @@ namespace QuantConnect.Lean.DataSource.DataBento
             _writer?.Dispose();
             _stream?.Dispose();
             _tcpClient?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Event args for symbol mapping messages from Databento.
+    /// Contains the mapping from canonical symbol to resolved contract.
+    /// </summary>
+    public class SymbolMappingEventArgs : EventArgs
+    {
+        /// <summary>
+        /// The canonical LEAN symbol that was subscribed (e.g., /MYM)
+        /// </summary>
+        public Symbol CanonicalSymbol { get; }
+
+        /// <summary>
+        /// The resolved contract symbol from Databento (e.g., MYMH6)
+        /// </summary>
+        public string DatabentoSymbol { get; }
+
+        /// <summary>
+        /// The Databento instrument ID for this contract
+        /// </summary>
+        public long InstrumentId { get; }
+
+        /// <summary>
+        /// The resolved LEAN contract Symbol with proper expiry
+        /// </summary>
+        public Symbol? ContractSymbol { get; }
+
+        public SymbolMappingEventArgs(Symbol canonicalSymbol, string databentoSymbol, long instrumentId, Symbol? contractSymbol)
+        {
+            CanonicalSymbol = canonicalSymbol;
+            DatabentoSymbol = databentoSymbol;
+            InstrumentId = instrumentId;
+            ContractSymbol = contractSymbol;
         }
     }
 }

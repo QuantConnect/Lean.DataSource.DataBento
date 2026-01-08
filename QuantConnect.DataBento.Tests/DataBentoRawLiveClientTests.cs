@@ -249,5 +249,51 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
                 }
             });
         }
+
+        [Test]
+        [TestCase("MYMH6", "MYM", 3, 2026)]   // MYM March 2026 (bug case - month code H is in root)
+        [TestCase("ESZ25", "ES", 12, 2025)]   // ES December 2025
+        [TestCase("NQM6", "NQ", 6, 2026)]     // NQ June 2026
+        [TestCase("YMH26", "YM", 3, 2026)]    // YM March 2026 (2-digit year)
+        [TestCase("MESF7", "MES", 1, 2027)]   // Micro E-mini S&P January 2027
+        [TestCase("CLG26", "CL", 2, 2026)]    // Crude Oil February 2026
+        public void ParseDatabentoContractSymbol_ParsesCorrectly(string databentoSymbol, string expectedRoot, int expectedMonth, int expectedYear)
+        {
+            // Create a canonical symbol for reference (market doesn't matter for parsing test)
+            var canonicalSymbol = Symbol.Create("ES", SecurityType.Future, Market.CME);
+
+            var result = _client.ParseDatabentoContractSymbol(canonicalSymbol, databentoSymbol);
+
+            Assert.IsNotNull(result, $"Should successfully parse {databentoSymbol}");
+            Assert.AreEqual(expectedRoot, result.ID.Symbol, $"Root symbol should be {expectedRoot}");
+            Assert.AreEqual(expectedMonth, result.ID.Date.Month, $"Month should be {expectedMonth}");
+            Assert.AreEqual(expectedYear, result.ID.Date.Year, $"Year should be {expectedYear}");
+
+            Log.Trace($"Successfully parsed {databentoSymbol} -> {result} (expiry: {result.ID.Date:yyyy-MM-dd})");
+        }
+
+        [Test]
+        [TestCase("MYMH6-MYMM6")]  // Spread symbol
+        [TestCase("ESZ25-ESH26")]  // Spread symbol
+        public void ParseDatabentoContractSymbol_SkipsSpreads(string spreadSymbol)
+        {
+            var canonicalSymbol = Symbol.Create("ES", SecurityType.Future, Market.CME);
+
+            var result = _client.ParseDatabentoContractSymbol(canonicalSymbol, spreadSymbol);
+
+            Assert.IsNull(result, $"Should return null for spread symbol {spreadSymbol}");
+        }
+
+        [Test]
+        [TestCase("")]
+        [TestCase(null)]
+        public void ParseDatabentoContractSymbol_HandlesEmptyInput(string input)
+        {
+            var canonicalSymbol = Symbol.Create("ES", SecurityType.Future, Market.CME);
+
+            var result = _client.ParseDatabentoContractSymbol(canonicalSymbol, input);
+
+            Assert.IsNull(result, "Should return null for empty/null input");
+        }
     }
 }
