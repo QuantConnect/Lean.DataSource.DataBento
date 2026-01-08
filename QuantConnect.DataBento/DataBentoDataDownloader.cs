@@ -236,8 +236,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
             return symbol.Value;
         }
 
-        /// Class for parsing trade data from Databento
-        /// Really used as a map from the http request to then get it in QC data structures
+        /// Class for parsing OHLCV bar data from Databento
+        /// Databento returns prices as fixed-point integers scaled by 10^9
         private class DatabentoBar
         {
             [Name("ts_event")]
@@ -247,19 +247,23 @@ namespace QuantConnect.Lean.DataSource.DataBento
                 .AddTicks((TimestampNanos % 1_000_000_000) / 100).UtcDateTime;
 
             [Name("open")]
-            public decimal Open { get; set; }
+            public long OpenRaw { get; set; }
+            public decimal Open => OpenRaw * PriceScaleFactor;
 
             [Name("high")]
-            public decimal High { get; set; }
+            public long HighRaw { get; set; }
+            public decimal High => HighRaw * PriceScaleFactor;
 
             [Name("low")]
-            public decimal Low { get; set; }
+            public long LowRaw { get; set; }
+            public decimal Low => LowRaw * PriceScaleFactor;
 
             [Name("close")]
-            public decimal Close { get; set; }
+            public long CloseRaw { get; set; }
+            public decimal Close => CloseRaw * PriceScaleFactor;
 
             [Name("volume")]
-            public decimal Volume { get; set; }
+            public long Volume { get; set; }
         }
 
         private class DatabentoTrade
