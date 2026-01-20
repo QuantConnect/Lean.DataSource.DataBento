@@ -13,9 +13,6 @@
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 	</PropertyGroup>
 	<ItemGroup>
-		<Compile Include="..\Demonstration.cs" Link="Demonstration.cs" />
-	</ItemGroup>
-	<ItemGroup>
 		<PackageReference Include="NUnit" Version="4.2.2" />
 		<PackageReference Include="NUnit.Analyzers" Version="3.6.1" />
 		<PackageReference Include="NUnit3TestAdapter" Version="4.6.0">
