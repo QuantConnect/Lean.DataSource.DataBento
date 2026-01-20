@@ -1,9 +1,7 @@
 {
-  "data-folder":"../../../../../Data/",
-
-  "job-user-id": "0",
+  "data-folder": "../../../../Lean/Data/",
+  "job-user-id": "",
   "api-access-token": "",
   "job-organization-id": "",
-
-  "databento-api-key":""
+  "databento-api-key": ""
 }
