@@ -1,0 +1,95 @@
+﻿/*
+ * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+*/
+
+using System;
+using NUnit.Framework;
+using QuantConnect.Logging;
+using QuantConnect.Configuration;
+using QuantConnect.Lean.DataSource.DataBento.Api;
+
+namespace QuantConnect.Lean.DataSource.DataBento.Tests;
+
+[TestFixture]
+public class DataBentoHistoricalApiClientTests
+{
+    private HistoricalAPIClient _client;
+
+    [OneTimeSetUp]
+    public void OneTimeSetUp()
+    {
+        var apiKey = Config.Get("databento-api-key");
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            Assert.Inconclusive("Please set the 'databento-api-key' in your configuration to enable these tests.");
+        }
+
+        _client = new HistoricalAPIClient(apiKey);
+    }
+
+    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Daily)]
+    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Hour)]
+    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Minute)]
+    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Second)]
+    //[TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Tick)]
+    [TestCase("ESH6 C6875", "2026/01/11", "2026/01/20", Resolution.Daily)]
+    public void CanInitializeHistoricalApiClient(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
+    {
+        var dataCounter = 0;
+        var previousEndTime = DateTime.MinValue;
+        foreach (var data in _client.GetHistoricalOhlcvBars(ticker, startDate, endDate, resolution, TickType.Trade))
+        {
+            Assert.IsNotNull(data);
+
+            Assert.Greater(data.Open, 0m);
+            Assert.Greater(data.High, 0m);
+            Assert.Greater(data.Low, 0m);
+            Assert.Greater(data.Close, 0m);
+            Assert.Greater(data.Volume, 0m);
+            Assert.AreNotEqual(default(DateTime), data.Header.UtcTime);
+
+            Assert.IsTrue(data.Header.UtcTime > previousEndTime,
+                $"Bar at {data.Header.UtcTime:o} is not after previous bar at {previousEndTime:o}");
+            previousEndTime = data.Header.UtcTime;
+
+            dataCounter++;
+        }
+
+        Log.Trace($"{nameof(CanInitializeHistoricalApiClient)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
+        Assert.Greater(dataCounter, 0);
+    }
+
+    [TestCase("ESH6 C6875", "2026/01/11", "2026/01/20", Resolution.Daily)]
+    public void ShouldFetchOpenInterest(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
+    {
+        var dataCounter = 0;
+        var previousEndTime = DateTime.MinValue;
+        foreach (var data in _client.GetOpenInterest(ticker, startDate, endDate))
+        {
+            Assert.IsNotNull(data);
+
+            Assert.Greater(data.Quantity, 0m);
+            Assert.AreNotEqual(default(DateTime), data.Header.UtcTime);
+
+            Assert.IsTrue(data.Header.UtcTime > previousEndTime,
+                $"Bar at {data.Header.UtcTime:o} is not after previous bar at {previousEndTime:o}");
+            previousEndTime = data.Header.UtcTime;
+
+            dataCounter++;
+        }
+
+        Log.Trace($"{nameof(CanInitializeHistoricalApiClient)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
+        Assert.Greater(dataCounter, 0);
+    }
+}

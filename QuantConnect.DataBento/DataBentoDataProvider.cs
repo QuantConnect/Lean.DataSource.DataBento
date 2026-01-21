@@ -1,6 +1,6 @@
 /*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
- * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ using QuantConnect.Logging;
 using QuantConnect.Packets;
 using QuantConnect.Securities;
 using System.Collections.Concurrent;
+using QuantConnect.Lean.DataSource.DataBento.Api;
 
 namespace QuantConnect.Lean.DataSource.DataBento
 {
@@ -34,18 +35,25 @@ namespace QuantConnect.Lean.DataSource.DataBento
     /// </summary>
     public partial class DataBentoProvider : IDataQueueHandler
     {
+        /// <summary>
+        /// Resolves map files to correctly handle current and historical ticker symbols.
+        /// </summary>
+        private readonly IMapFileProvider _mapFileProvider = Composer.Instance.GetPart<IMapFileProvider>();
+
+        private HistoricalAPIClient _historicalApiClient;
+
+        private readonly DataBentoSymbolMapper _symbolMapper = new DataBentoSymbolMapper();
+
         private readonly IDataAggregator _dataAggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(
             Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager"), forceTypeNameOnExisting: false);
         private EventBasedDataQueueHandlerSubscriptionManager _subscriptionManager;
         private DataBentoRawLiveClient _client;
-        private readonly DataBentoDataDownloader _dataDownloader;
         private bool _potentialUnsupportedResolutionMessageLogged;
         private bool _sessionStarted = false;
         private readonly object _sessionLock = new();
         private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
         private readonly ConcurrentDictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
         private bool _initialized;
-        private bool _unsupportedTickTypeMessagedLogged;
 
         /// <summary>
         /// Returns true if we're currently connected to the Data Provider
@@ -56,9 +64,19 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// Initializes a new instance of the DataBentoProvider
         /// </summary>
         public DataBentoProvider()
+            : this(Config.Get("databento-api-key"))
         {
-            var apiKey = Config.Get("databento-api-key");
-            _dataDownloader = new DataBentoDataDownloader(apiKey, _marketHoursDatabase);
+        }
+
+        public DataBentoProvider(string apiKey)
+        {
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                // If the API key is not provided, we can't do anything.
+                // The handler might going to be initialized using a node packet job.
+                return;
+            }
+
             Initialize(apiKey);
         }
 
@@ -112,6 +130,8 @@ namespace QuantConnect.Lean.DataSource.DataBento
             cancellationTokenSource.Token,
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
+
+            _historicalApiClient = new(apiKey);      
             _initialized = true;
 
             Log.Debug("DataBentoProvider.Initialize(): Initialization complete");
@@ -166,11 +186,11 @@ namespace QuantConnect.Lean.DataSource.DataBento
         /// </summary>
         /// <param name="symbol">The symbol</param>
         /// <returns>returns true if Data Provider supports the specified symbol; otherwise false</returns>
-        private bool CanSubscribe(Symbol symbol)
+        private static bool CanSubscribe(Symbol symbol)
         {
             return !symbol.Value.Contains("universe", StringComparison.InvariantCultureIgnoreCase) &&
                    !symbol.IsCanonical() &&
-                   IsSecurityTypeSupported(symbol.SecurityType);
+                    symbol.SecurityType == SecurityType.Future;
         }
 
         /// <summary>
@@ -232,18 +252,6 @@ namespace QuantConnect.Lean.DataSource.DataBento
             _dataAggregator?.DisposeSafely();
             _subscriptionManager?.DisposeSafely();
             _client?.DisposeSafely();
-            _dataDownloader?.DisposeSafely();
-        }
-
-        /// <summary>
-        /// Checks if the security type is supported
-        /// </summary>
-        /// <param name="securityType">Security type to check</param>
-        /// <returns>True if supported</returns>
-        private bool IsSecurityTypeSupported(SecurityType securityType)
-        {
-            // DataBento primarily supports futures, but also has equity and option coverage
-            return securityType == SecurityType.Future;
         }
 
         /// <summary>

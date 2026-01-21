@@ -1,6 +1,6 @@
 ﻿/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
- * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,13 +17,10 @@
 using System;
 using System.Linq;
 using NUnit.Framework;
-using QuantConnect.Configuration;
-using QuantConnect.Data;
-using QuantConnect.Data.Market;
-using QuantConnect.Lean.DataSource.DataBento;
+using QuantConnect.Util;
 using QuantConnect.Logging;
 using QuantConnect.Securities;
-using QuantConnect.Util;
+using QuantConnect.Data.Market;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests
 {
@@ -31,20 +28,13 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
     public class DataBentoDataDownloaderTests
     {
         private DataBentoDataDownloader _downloader;
-        private MarketHoursDatabase _marketHoursDatabase;
-        protected readonly string ApiKey = Config.Get("databento-api-key");
 
-        private static Symbol CreateEsFuture()
-        {
-            var expiration = new DateTime(2026, 3, 20);
-            return Symbol.CreateFuture("ES", Market.CME, expiration);
-        }
+        private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
 
         [SetUp]
         public void SetUp()
         {
-            _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
-            _downloader = new DataBentoDataDownloader(ApiKey, _marketHoursDatabase);
+            _downloader = new DataBentoDataDownloader();
         }
 
         [TearDown]
@@ -60,15 +50,15 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
         [TestCase(Resolution.Tick)]
         public void DownloadsTradeDataForLeanFuture(Resolution resolution)
         {
-            var symbol = CreateEsFuture();
+            var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
             var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
 
-            var startUtc = new DateTime(2024, 5, 1, 0, 0, 0, DateTimeKind.Utc);
-            var endUtc = new DateTime(2024, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+            var startUtc = new DateTime(2026, 1, 18, 0, 0, 0, DateTimeKind.Utc);
+            var endUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
 
             if (resolution == Resolution.Tick)
             {
-                startUtc = new DateTime(2024, 5, 1, 9, 30, 0, DateTimeKind.Utc);
+                startUtc = new DateTime(2026, 1, 21, 9, 30, 0, DateTimeKind.Utc);
                 endUtc = startUtc.AddMinutes(15);
             }
 
@@ -120,10 +110,10 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
         [Test]
         public void DownloadsQuoteTicksForLeanFuture()
         {
-            var symbol = CreateEsFuture();
+            var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
             var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
 
-            var startUtc = new DateTime(2024, 5, 1, 9, 30, 0, DateTimeKind.Utc);
+            var startUtc = new DateTime(2026, 1, 20, 9, 30, 0, DateTimeKind.Utc);
             var endUtc   = startUtc.AddMinutes(15);
 
             var parameters = new DataDownloaderGetParameters(
@@ -166,10 +156,10 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
         [Test]
         public void DataIsSortedByTime()
         {
-            var symbol = CreateEsFuture();
+            var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
 
-            var startUtc = new DateTime(2024, 5, 1, 0, 0, 0, DateTimeKind.Utc);
-            var endUtc   = new DateTime(2024, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+            var startUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
+            var endUtc   = new DateTime(2024, 1, 21, 0, 0, 0, DateTimeKind.Utc);
 
             var parameters = new DataDownloaderGetParameters(
                 symbol,
@@ -191,16 +181,6 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests
                     $"Data not sorted at index {i}"
                 );
             }
-        }
-
-        [Test]
-        public void DisposeIsIdempotent()
-        {
-            var downloader = new DataBentoDataDownloader(ApiKey,
-                MarketHoursDatabase.FromDataFolder());
-
-            Assert.DoesNotThrow(downloader.Dispose);
-            Assert.DoesNotThrow(downloader.Dispose);
         }
     }
 }

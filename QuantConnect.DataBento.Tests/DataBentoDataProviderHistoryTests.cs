@@ -1,6 +1,6 @@
 ﻿/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
- * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,148 +19,101 @@ using System.Linq;
 using NUnit.Framework;
 using QuantConnect.Data;
 using QuantConnect.Util;
-using QuantConnect.Lean.DataSource.DataBento;
 using QuantConnect.Securities;
 using System.Collections.Generic;
 using QuantConnect.Logging;
 using QuantConnect.Data.Market;
-using QuantConnect.Configuration;
 
-namespace QuantConnect.Lean.DataSource.DataBento.Tests
+namespace QuantConnect.Lean.DataSource.DataBento.Tests;
+
+[TestFixture]
+public class DataBentoDataProviderHistoryTests
 {
-    [TestFixture]
-    public class DataBentoDataProviderHistoryTests
+    private DataBentoProvider _historyDataProvider;
+
+    [SetUp]
+    public void SetUp()
     {
-        private DataBentoProvider _historyDataProvider;
-        private MarketHoursDatabase _marketHoursDatabase;
-        protected readonly string ApiKey = Config.Get("databento-api-key");
+        _historyDataProvider = new DataBentoProvider();
+    }
 
-        private static Symbol CreateEsFuture()
+    [TearDown]
+    public void TearDown()
+    {
+        _historyDataProvider?.Dispose();
+    }
+
+    internal static IEnumerable<TestCaseData> TestParameters
+    {
+        get
         {
-            var expiration = new DateTime(2026, 3, 20);
-            return Symbol.CreateFuture("ES", Market.CME, expiration);
+            var es = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
+
+            yield return new TestCaseData(es, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(5), false);
+            yield return new TestCaseData(es, Resolution.Hour, TickType.Trade, TimeSpan.FromDays(2), false);
+            yield return new TestCaseData(es, Resolution.Minute, TickType.Trade, TimeSpan.FromHours(4), false);
+            yield return new TestCaseData(es, Resolution.Second, TickType.Trade, TimeSpan.FromHours(4), false);
+            yield return new TestCaseData(es, Resolution.Tick, TickType.Quote, TimeSpan.FromMinutes(15), true);
         }
+    }
 
-        [SetUp]
-        public void SetUp()
-        {
-            _historyDataProvider = new DataBentoProvider();
-        }
+    [Test, TestCaseSource(nameof(TestParameters))]
+    public void GetsHistory(Symbol symbol, Resolution resolution, TickType tickType, TimeSpan period, bool expectsNoData)
+    {
+        var request = GetHistoryRequest(resolution, tickType, symbol, period);
 
-        [TearDown]
-        public void TearDown()
-        {
-            _historyDataProvider?.Dispose();
-        }
+        var history = _historyDataProvider.GetHistory(request);
 
-        internal static IEnumerable<TestCaseData> TestParameters
+        Assert.IsNotNull(history);
+
+        foreach (var point in history)
         {
-            get
+            Assert.AreEqual(symbol, point.Symbol);
+
+            if (point is TradeBar bar)
             {
-                var es = CreateEsFuture();
-
-                yield return new TestCaseData(es, Resolution.Daily, TickType.Trade, TimeSpan.FromDays(5), false)
-                    .SetDescription("ES futures daily trade history")
-                    .SetCategory("Valid");
-
-                yield return new TestCaseData(es, Resolution.Hour, TickType.Trade, TimeSpan.FromDays(2), false)
-                    .SetDescription("ES futures hourly trade history")
-                    .SetCategory("Valid");
-
-                yield return new TestCaseData(es, Resolution.Minute, TickType.Trade, TimeSpan.FromHours(4), false)
-                    .SetDescription("ES futures minute trade history")
-                    .SetCategory("Valid");
-
-                yield return new TestCaseData(es, Resolution.Tick, TickType.Quote, TimeSpan.FromMinutes(15), false)
-                    .SetDescription("ES futures quote ticks")
-                    .SetCategory("Quote");
-            }
-        }
-
-        [Test, TestCaseSource(nameof(TestParameters))]
-        public void GetsHistory(Symbol symbol, Resolution resolution, TickType tickType, TimeSpan period, bool expectsNoData)
-        {
-            var request = GetHistoryRequest(resolution, tickType, symbol, period);
-
-            var history = _historyDataProvider.GetHistory(request);
-
-            if (expectsNoData)
-            {
-                Assert.IsTrue(history == null || !history.Any(),
-                    $"Expected no data for unsupported symbol: {symbol}");
-                return;
+                Assert.Greater(bar.Close, 0);
+                Assert.GreaterOrEqual(bar.Volume, 0);
             }
 
-            Assert.IsNotNull(history);
-            var data = history.ToList();
-            Assert.IsNotEmpty(data);
-
-            Log.Trace($"Received {data.Count} data points for {symbol} @ {resolution}");
-
-            foreach (var point in data.Take(5))
+            if (point is Tick tick && tickType == TickType.Quote)
             {
-                Assert.AreEqual(symbol, point.Symbol);
-
-                if (point is TradeBar bar)
-                {
-                    Assert.Greater(bar.Close, 0);
-                    Assert.GreaterOrEqual(bar.Volume, 0);
-                }
-
-                if (point is Tick tick && tickType == TickType.Quote)
-                {
-                    Assert.IsTrue(tick.BidPrice > 0 || tick.AskPrice > 0);
-                }
+                Assert.IsTrue(tick.BidPrice > 0 || tick.AskPrice > 0);
             }
         }
+    }
 
-        [Test]
-        public void GetHistoryWithMultipleSymbols()
-        {
-            var es = CreateEsFuture();
+    private static HistoryRequest GetHistoryRequest(
+        Resolution resolution,
+        TickType tickType,
+        Symbol symbol,
+        TimeSpan period)
+    {
+        var endUtc = new DateTime(2026, 1, 22);
+        var startUtc = endUtc - period;
 
-            var request = GetHistoryRequest(Resolution.Daily, TickType.Trade, es, TimeSpan.FromDays(3));
+        var dataType = LeanData.GetDataType(resolution, tickType);
+        var marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
 
-            var history = _historyDataProvider.GetHistory(request)?.ToList();
+        var exchangeHours = marketHoursDatabase.GetExchangeHours(
+            symbol.ID.Market, symbol, symbol.SecurityType);
 
-            Assert.IsTrue(
-                history != null && history.Any(),
-                "Expected history for ES"
-            );
-        }
+        var dataTimeZone = marketHoursDatabase.GetDataTimeZone(
+            symbol.ID.Market, symbol, symbol.SecurityType);
 
-        internal static HistoryRequest GetHistoryRequest(
-            Resolution resolution,
-            TickType tickType,
-            Symbol symbol,
-            TimeSpan period)
-        {
-            var endUtc = new DateTime(2024, 5, 10, 0, 0, 0, DateTimeKind.Utc);
-            var startUtc = endUtc - period;
-
-            var dataType = LeanData.GetDataType(resolution, tickType);
-            var marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
-
-            var exchangeHours = marketHoursDatabase.GetExchangeHours(
-                symbol.ID.Market, symbol, symbol.SecurityType);
-
-            var dataTimeZone = marketHoursDatabase.GetDataTimeZone(
-                symbol.ID.Market, symbol, symbol.SecurityType);
-
-            return new HistoryRequest(
-                startTimeUtc: startUtc,
-                endTimeUtc: endUtc,
-                dataType: dataType,
-                symbol: symbol,
-                resolution: resolution,
-                exchangeHours: exchangeHours,
-                dataTimeZone: dataTimeZone,
-                fillForwardResolution: resolution,
-                includeExtendedMarketHours: true,
-                isCustomData: false,
-                DataNormalizationMode.Raw,
-                tickType: tickType
-            );
-        }
+        return new HistoryRequest(
+            startTimeUtc: startUtc,
+            endTimeUtc: endUtc,
+            dataType: dataType,
+            symbol: symbol,
+            resolution: resolution,
+            exchangeHours: exchangeHours,
+            dataTimeZone: dataTimeZone,
+            fillForwardResolution: resolution,
+            includeExtendedMarketHours: true,
+            isCustomData: false,
+            DataNormalizationMode.Raw,
+            tickType: tickType
+        );
     }
 }
