@@ -14,8 +14,8 @@
  *
 */
 
-using NUnit.Framework;
 using System;
+using NUnit.Framework;
 using System.Collections.Generic;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
@@ -40,7 +40,7 @@ public class DataBentoSymbolMapperTests
             // TSLA - Equity
             var es = Symbol.CreateFuture(Securities.Futures.Indices.SP500EMini, Market.CME, new DateTime(2026, 3, 20));
             yield return new TestCaseData(es, "ESH6");
-            
+
         }
     }
 

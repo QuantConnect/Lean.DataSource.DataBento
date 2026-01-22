@@ -15,64 +15,63 @@
 
 using QuantConnect.Brokerages;
 
-namespace QuantConnect.Lean.DataSource.DataBento
+namespace QuantConnect.Lean.DataSource.DataBento;
+
+/// <summary>
+/// Provides the mapping between Lean symbols and DataBento symbols.
+/// </summary>
+public class DataBentoSymbolMapper : ISymbolMapper
 {
+
     /// <summary>
-    /// Provides the mapping between Lean symbols and DataBento symbols.
+    /// Converts a Lean symbol instance to a brokerage symbol
     /// </summary>
-    public class DataBentoSymbolMapper : ISymbolMapper
+    /// <param name="symbol">A Lean symbol instance</param>
+    /// <returns>The brokerage symbol</returns>
+    public string GetBrokerageSymbol(Symbol symbol)
     {
-
-        /// <summary>
-        /// Converts a Lean symbol instance to a brokerage symbol
-        /// </summary>
-        /// <param name="symbol">A Lean symbol instance</param>
-        /// <returns>The brokerage symbol</returns>
-        public string GetBrokerageSymbol(Symbol symbol)
+        switch (symbol.SecurityType)
         {
-            switch (symbol.SecurityType)
-            {
-                case SecurityType.Future:
-                    return SymbolRepresentation.GenerateFutureTicker(symbol.ID.Symbol, symbol.ID.Date, doubleDigitsYear: false, includeExpirationDate: false);
-                default:
-                    throw new Exception($"The unsupported security type: {symbol.SecurityType}");
-            }
+            case SecurityType.Future:
+                return SymbolRepresentation.GenerateFutureTicker(symbol.ID.Symbol, symbol.ID.Date, doubleDigitsYear: false, includeExpirationDate: false);
+            default:
+                throw new Exception($"The unsupported security type: {symbol.SecurityType}");
+        }
+    }
+
+    /// <summary>
+    /// Converts a brokerage symbol to a Lean symbol instance
+    /// </summary>
+    /// <param name="brokerageSymbol">The brokerage symbol</param>
+    /// <param name="securityType">The security type</param>
+    /// <param name="market">The market</param>
+    /// <param name="expirationDate">Expiration date of the security(if applicable)</param>
+    /// <returns>A new Lean Symbol instance</returns>
+    public Symbol GetLeanSymbol(string brokerageSymbol, SecurityType securityType, string market,
+        DateTime expirationDate = new DateTime(), decimal strike = 0, OptionRight optionRight = 0)
+    {
+        switch (securityType)
+        {
+            case SecurityType.Future:
+                return Symbol.CreateFuture(brokerageSymbol, market, expirationDate);
+            default:
+                throw new Exception($"The unsupported security type: {securityType}");
+        }
+    }
+
+    /// <summary>
+    /// Converts a brokerage future symbol to a Lean symbol instance
+    /// </summary>
+    /// <param name="brokerageSymbol">The brokerage symbol</param>
+    /// <returns>A new Lean Symbol instance</returns>
+    public Symbol GetLeanSymbolForFuture(string brokerageSymbol)
+    {
+        // ignore futures spreads
+        if (brokerageSymbol.Contains("-"))
+        {
+            return null;
         }
 
-        /// <summary>
-        /// Converts a brokerage symbol to a Lean symbol instance
-        /// </summary>
-        /// <param name="brokerageSymbol">The brokerage symbol</param>
-        /// <param name="securityType">The security type</param>
-        /// <param name="market">The market</param>
-        /// <param name="expirationDate">Expiration date of the security(if applicable)</param>
-        /// <returns>A new Lean Symbol instance</returns>
-        public Symbol GetLeanSymbol(string brokerageSymbol, SecurityType securityType, string market,
-            DateTime expirationDate = new DateTime(), decimal strike = 0, OptionRight optionRight = 0)
-        {
-            switch (securityType)
-            {
-                case SecurityType.Future:
-                    return Symbol.CreateFuture(brokerageSymbol, market, expirationDate);
-                default:
-                    throw new Exception($"The unsupported security type: {securityType}");
-            }
-        }
-
-        /// <summary>
-        /// Converts a brokerage future symbol to a Lean symbol instance
-        /// </summary>
-        /// <param name="brokerageSymbol">The brokerage symbol</param>
-        /// <returns>A new Lean Symbol instance</returns>
-        public Symbol GetLeanSymbolForFuture(string brokerageSymbol)
-        {
-            // ignore futures spreads
-            if (brokerageSymbol.Contains("-"))
-            {
-                return null;
-            }
-
-            return SymbolRepresentation.ParseFutureSymbol(brokerageSymbol);
-        }
+        return SymbolRepresentation.ParseFutureSymbol(brokerageSymbol);
     }
 }

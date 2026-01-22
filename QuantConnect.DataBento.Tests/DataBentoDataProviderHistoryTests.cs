@@ -15,14 +15,12 @@
 */
 
 using System;
-using System.Linq;
 using NUnit.Framework;
 using QuantConnect.Data;
 using QuantConnect.Util;
 using QuantConnect.Securities;
-using System.Collections.Generic;
-using QuantConnect.Logging;
 using QuantConnect.Data.Market;
+using System.Collections.Generic;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 

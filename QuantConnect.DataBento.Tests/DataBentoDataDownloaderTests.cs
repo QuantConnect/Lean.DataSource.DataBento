@@ -22,165 +22,164 @@ using QuantConnect.Logging;
 using QuantConnect.Securities;
 using QuantConnect.Data.Market;
 
-namespace QuantConnect.Lean.DataSource.DataBento.Tests
+namespace QuantConnect.Lean.DataSource.DataBento.Tests;
+
+[TestFixture]
+public class DataBentoDataDownloaderTests
 {
-    [TestFixture]
-    public class DataBentoDataDownloaderTests
+    private DataBentoDataDownloader _downloader;
+
+    private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
+
+    [SetUp]
+    public void SetUp()
     {
-        private DataBentoDataDownloader _downloader;
+        _downloader = new DataBentoDataDownloader();
+    }
 
-        private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
+    [TearDown]
+    public void TearDown()
+    {
+        _downloader?.Dispose();
+    }
 
-        [SetUp]
-        public void SetUp()
+    [TestCase(Resolution.Daily)]
+    [TestCase(Resolution.Hour)]
+    [TestCase(Resolution.Minute)]
+    [TestCase(Resolution.Second)]
+    [TestCase(Resolution.Tick)]
+    public void DownloadsTradeDataForLeanFuture(Resolution resolution)
+    {
+        var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
+        var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
+
+        var startUtc = new DateTime(2026, 1, 18, 0, 0, 0, DateTimeKind.Utc);
+        var endUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
+
+        if (resolution == Resolution.Tick)
         {
-            _downloader = new DataBentoDataDownloader();
+            startUtc = new DateTime(2026, 1, 21, 9, 30, 0, DateTimeKind.Utc);
+            endUtc = startUtc.AddMinutes(15);
         }
 
-        [TearDown]
-        public void TearDown()
+        var parameters = new DataDownloaderGetParameters(
+            symbol,
+            resolution,
+            startUtc,
+            endUtc,
+            TickType.Trade
+        );
+
+        var data = _downloader.Get(parameters).ToList();
+
+        Log.Trace($"Downloaded {data.Count} trade points for {symbol} @ {resolution}");
+
+        Assert.IsNotEmpty(data);
+
+        var startExchange = startUtc.ConvertFromUtc(exchangeTimeZone);
+        var endExchange = endUtc.ConvertFromUtc(exchangeTimeZone);
+
+        foreach (var point in data)
         {
-            _downloader?.Dispose();
-        }
+            Assert.AreEqual(symbol, point.Symbol);
+            Assert.That(point.Time, Is.InRange(startExchange, endExchange));
 
-        [TestCase(Resolution.Daily)]
-        [TestCase(Resolution.Hour)]
-        [TestCase(Resolution.Minute)]
-        [TestCase(Resolution.Second)]
-        [TestCase(Resolution.Tick)]
-        public void DownloadsTradeDataForLeanFuture(Resolution resolution)
-        {
-            var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
-            var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
-
-            var startUtc = new DateTime(2026, 1, 18, 0, 0, 0, DateTimeKind.Utc);
-            var endUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
-
-            if (resolution == Resolution.Tick)
+            switch (point)
             {
-                startUtc = new DateTime(2026, 1, 21, 9, 30, 0, DateTimeKind.Utc);
-                endUtc = startUtc.AddMinutes(15);
-            }
+                case TradeBar bar:
+                    Assert.Greater(bar.Open, 0);
+                    Assert.Greater(bar.High, 0);
+                    Assert.Greater(bar.Low, 0);
+                    Assert.Greater(bar.Close, 0);
+                    Assert.GreaterOrEqual(bar.Volume, 0);
+                    Assert.GreaterOrEqual(bar.High, bar.Low);
+                    break;
 
-            var parameters = new DataDownloaderGetParameters(
-                symbol,
-                resolution,
-                startUtc,
-                endUtc,
-                TickType.Trade
-            );
+                case Tick tick:
+                    Assert.Greater(tick.Value, 0);
+                    Assert.GreaterOrEqual(tick.Quantity, 0);
+                    break;
 
-            var data = _downloader.Get(parameters).ToList();
-
-            Log.Trace($"Downloaded {data.Count} trade points for {symbol} @ {resolution}");
-
-            Assert.IsNotEmpty(data);
-
-            var startExchange = startUtc.ConvertFromUtc(exchangeTimeZone);
-            var endExchange = endUtc.ConvertFromUtc(exchangeTimeZone);
-
-            foreach (var point in data)
-            {
-                Assert.AreEqual(symbol, point.Symbol);
-                Assert.That(point.Time, Is.InRange(startExchange, endExchange));
-
-                switch (point)
-                {
-                    case TradeBar bar:
-                        Assert.Greater(bar.Open, 0);
-                        Assert.Greater(bar.High, 0);
-                        Assert.Greater(bar.Low, 0);
-                        Assert.Greater(bar.Close, 0);
-                        Assert.GreaterOrEqual(bar.Volume, 0);
-                        Assert.GreaterOrEqual(bar.High, bar.Low);
-                        break;
-
-                    case Tick tick:
-                        Assert.Greater(tick.Value, 0);
-                        Assert.GreaterOrEqual(tick.Quantity, 0);
-                        break;
-
-                    default:
-                        Assert.Fail($"Unexpected data type {point.GetType()}");
-                        break;
-                }
+                default:
+                    Assert.Fail($"Unexpected data type {point.GetType()}");
+                    break;
             }
         }
+    }
 
-        [Test]
-        public void DownloadsQuoteTicksForLeanFuture()
+    [Test]
+    public void DownloadsQuoteTicksForLeanFuture()
+    {
+        var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
+        var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
+
+        var startUtc = new DateTime(2026, 1, 20, 9, 30, 0, DateTimeKind.Utc);
+        var endUtc = startUtc.AddMinutes(15);
+
+        var parameters = new DataDownloaderGetParameters(
+            symbol,
+            Resolution.Tick,
+            startUtc,
+            endUtc,
+            TickType.Quote
+        );
+
+        var data = _downloader.Get(parameters).ToList();
+
+        Log.Trace($"Downloaded {data.Count} quote ticks for {symbol}");
+
+        Assert.IsNotEmpty(data);
+
+        var startExchange = startUtc.ConvertFromUtc(exchangeTimeZone);
+        var endExchange = endUtc.ConvertFromUtc(exchangeTimeZone);
+
+        foreach (var point in data)
         {
-            var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
-            var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
+            Assert.AreEqual(symbol, point.Symbol);
+            Assert.That(point.Time, Is.InRange(startExchange, endExchange));
 
-            var startUtc = new DateTime(2026, 1, 20, 9, 30, 0, DateTimeKind.Utc);
-            var endUtc   = startUtc.AddMinutes(15);
-
-            var parameters = new DataDownloaderGetParameters(
-                symbol,
-                Resolution.Tick,
-                startUtc,
-                endUtc,
-                TickType.Quote
-            );
-
-            var data = _downloader.Get(parameters).ToList();
-
-            Log.Trace($"Downloaded {data.Count} quote ticks for {symbol}");
-
-            Assert.IsNotEmpty(data);
-
-            var startExchange = startUtc.ConvertFromUtc(exchangeTimeZone);
-            var endExchange = endUtc.ConvertFromUtc(exchangeTimeZone);
-
-            foreach (var point in data)
+            if (point is Tick tick)
             {
-                Assert.AreEqual(symbol, point.Symbol);
-                Assert.That(point.Time, Is.InRange(startExchange, endExchange));
-
-                if (point is Tick tick)
-                {
-                    Assert.AreEqual(TickType.Quote, tick.TickType);
-                    Assert.IsTrue(
-                        tick.BidPrice > 0 || tick.AskPrice > 0,
-                        "Quote tick must have bid or ask"
-                    );
-                }
-                else if (point is QuoteBar bar)
-                {
-                    Assert.IsTrue(bar.Bid != null || bar.Ask != null);
-                }
-            }
-        }
-
-        [Test]
-        public void DataIsSortedByTime()
-        {
-            var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
-
-            var startUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
-            var endUtc   = new DateTime(2024, 1, 21, 0, 0, 0, DateTimeKind.Utc);
-
-            var parameters = new DataDownloaderGetParameters(
-                symbol,
-                Resolution.Minute,
-                startUtc,
-                endUtc,
-                TickType.Trade
-            );
-
-            var data = _downloader.Get(parameters).ToList();
-
-            Assert.IsNotEmpty(data);
-
-            for (int i = 1; i < data.Count; i++)
-            {
-                Assert.GreaterOrEqual(
-                    data[i].Time,
-                    data[i - 1].Time,
-                    $"Data not sorted at index {i}"
+                Assert.AreEqual(TickType.Quote, tick.TickType);
+                Assert.IsTrue(
+                    tick.BidPrice > 0 || tick.AskPrice > 0,
+                    "Quote tick must have bid or ask"
                 );
             }
+            else if (point is QuoteBar bar)
+            {
+                Assert.IsTrue(bar.Bid != null || bar.Ask != null);
+            }
+        }
+    }
+
+    [Test]
+    public void DataIsSortedByTime()
+    {
+        var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
+
+        var startUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
+        var endUtc = new DateTime(2024, 1, 21, 0, 0, 0, DateTimeKind.Utc);
+
+        var parameters = new DataDownloaderGetParameters(
+            symbol,
+            Resolution.Minute,
+            startUtc,
+            endUtc,
+            TickType.Trade
+        );
+
+        var data = _downloader.Get(parameters).ToList();
+
+        Assert.IsNotEmpty(data);
+
+        for (int i = 1; i < data.Count; i++)
+        {
+            Assert.GreaterOrEqual(
+                data[i].Time,
+                data[i - 1].Time,
+                $"Data not sorted at index {i}"
+            );
         }
     }
 }

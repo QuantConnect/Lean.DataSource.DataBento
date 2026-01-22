@@ -14,7 +14,6 @@
 */
 
 using Newtonsoft.Json;
-using Newtonsoft.Json.Serialization;
 using QuantConnect.Lean.DataSource.DataBento.Serialization;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
