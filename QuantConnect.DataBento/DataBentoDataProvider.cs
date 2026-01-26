@@ -157,6 +157,21 @@ public partial class DataBentoProvider : IDataQueueHandler
     }
 
     /// <summary>
+    /// Attempts to resolve the DataBento dataset for the specified symbol based on its Lean market.
+    /// </summary>
+    /// <param name="symbol">The symbol whose market is used to determine the DataBento dataset.</param>
+    /// <param name="dataSet">
+    /// When this method returns <c>true</c>, contains the resolved DataBento dataset; otherwise, <c>null</c>.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> if a DataBento dataset mapping exists for the symbol's market; otherwise, <c>false</c>.
+    /// </returns>
+    private bool TryGetDataBentoDataSet(Symbol symbol, out string? dataSet)
+    {
+        return _symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(symbol.ID.Market, out dataSet);
+    }
+
+    /// <summary>
     /// Logic to subscribe to the specified symbols
     /// </summary>
     public bool SubscriptionLogic(IEnumerable<Symbol> symbols, TickType tickType)

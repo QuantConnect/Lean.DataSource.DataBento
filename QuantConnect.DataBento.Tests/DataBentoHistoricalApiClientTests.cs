@@ -26,6 +26,15 @@ public class DataBentoHistoricalApiClientTests
 {
     private HistoricalAPIClient _client;
 
+    /// <summary>
+    /// Dataset for CME Globex futures
+    /// https://databento.com/docs/venues-and-datasets has more information on datasets through DataBento
+    /// </summary>
+    /// <remarks>
+    /// TODO: Hard coded for now. Later on can add equities and options with different mapping
+    /// </remarks>
+    private const string Dataset = "GLBX.MDP3";
+
     [OneTimeSetUp]
     public void OneTimeSetUp()
     {
@@ -48,7 +57,7 @@ public class DataBentoHistoricalApiClientTests
     {
         var dataCounter = 0;
         var previousEndTime = DateTime.MinValue;
-        foreach (var data in _client.GetHistoricalOhlcvBars(ticker, startDate, endDate, resolution, TickType.Trade))
+        foreach (var data in _client.GetHistoricalOhlcvBars(ticker, startDate, endDate, resolution, Dataset))
         {
             Assert.IsNotNull(data);
 
@@ -75,7 +84,7 @@ public class DataBentoHistoricalApiClientTests
     {
         var dataCounter = 0;
         var previousEndTime = DateTime.MinValue;
-        foreach (var data in _client.GetOpenInterest(ticker, startDate, endDate))
+        foreach (var data in _client.GetOpenInterest(ticker, startDate, endDate, Dataset))
         {
             Assert.IsNotNull(data);
 

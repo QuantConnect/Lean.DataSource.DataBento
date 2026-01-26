@@ -24,17 +24,6 @@ namespace QuantConnect.Lean.DataSource.DataBento.Api;
 
 public class HistoricalAPIClient : IDisposable
 {
-    //private const string
-
-    /// <summary>
-    /// Dataset for CME Globex futures
-    /// https://databento.com/docs/venues-and-datasets has more information on datasets through DataBento
-    /// </summary>
-    /// <remarks>
-    /// TODO: Hard coded for now. Later on can add equities and options with different mapping
-    /// </remarks>
-    private const string Dataset = "GLBX.MDP3";
-
     private readonly HttpClient _httpClient = new()
     {
         BaseAddress = new Uri("https://hist.databento.com")
@@ -45,11 +34,11 @@ public class HistoricalAPIClient : IDisposable
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             AuthenticationSchemes.Basic.ToString(),
             // Basic Auth expects "username:password". Using ":" means API key with an empty password.
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{apiKey}:")) 
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{apiKey}:"))
             );
     }
 
-    public IEnumerable<OhlcvBar> GetHistoricalOhlcvBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, TickType tickType)
+    public IEnumerable<OhlcvBar> GetHistoricalOhlcvBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
     {
         string schema;
         switch (resolution)
@@ -70,17 +59,17 @@ public class HistoricalAPIClient : IDisposable
                 throw new ArgumentException($"Unsupported resolution {resolution} for OHLCV data.");
         }
 
-        return GetRange<OhlcvBar>(symbol, startDateTimeUtc, endDateTimeUtc, schema);
+        return GetRange<OhlcvBar>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
     }
 
-    public IEnumerable<LevelOneData> GetTickBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc)
+    public IEnumerable<LevelOneData> GetTickBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
     {
-        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, "mbp-1", useLimit: true);
+        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, "mbp-1", dataSet, useLimit: true);
     }
 
-    public IEnumerable<StatisticsData> GetOpenInterest(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc)
+    public IEnumerable<StatisticsData> GetOpenInterest(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
     {
-        foreach (var statistics in GetRange<StatisticsData>(symbol, startDateTimeUtc, endDateTimeUtc, "statistics"))
+        foreach (var statistics in GetRange<StatisticsData>(symbol, startDateTimeUtc, endDateTimeUtc, "statistics", dataSet))
         {
             if (statistics.StatType == Models.Enums.StatisticType.OpenInterest)
             {
@@ -89,11 +78,11 @@ public class HistoricalAPIClient : IDisposable
         }
     }
 
-    private IEnumerable<T> GetRange<T>(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string schema, bool useLimit = false) where T : MarketDataRecord
+    private IEnumerable<T> GetRange<T>(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string schema, string dataSet, bool useLimit = false) where T : MarketDataRecord
     {
         var formData = new Dictionary<string, string>
         {
-            { "dataset", Dataset },
+            { "dataset", dataSet },
             { "end", Time.DateTimeToUnixTimeStampNanoseconds(endDateTimeUtc).ToStringInvariant() },
             { "symbols", symbol },
             { "schema", schema },

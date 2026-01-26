@@ -45,6 +45,11 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
     private volatile bool _invalidSecurityTypeWarningFired;
 
     /// <summary>
+    /// Indicates whether a DataBento dataset error has already been logged.
+    /// </summary>
+    private bool _dataBentoDatasetErrorFired;
+
+    /// <summary>
     /// Gets the total number of data points emitted by this history provider
     /// </summary>
     public override int DataPointCount => _dataPointCount;
@@ -113,21 +118,33 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
             return null;
         }
 
+        if (!TryGetDataBentoDataSet(historyRequest.Symbol, out var dataSet) || dataSet == null)
+        {
+            if (!_dataBentoDatasetErrorFired)
+            {
+                _dataBentoDatasetErrorFired = true;
+                Log.Error($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}: " +
+                    $"DataBento dataset not found for symbol '{historyRequest.Symbol.Value}, Market = {historyRequest.Symbol.ID.Market}."
+                );
+            }
+            return null;
+        }
+
         var history = default(IEnumerable<BaseData>);
         var brokerageSymbol = _symbolMapper.GetBrokerageSymbol(historyRequest.Symbol);
         switch (historyRequest.TickType)
         {
             case TickType.Trade when historyRequest.Resolution == Resolution.Tick:
-                history = GetHistoryThroughDataConsolidator(historyRequest, brokerageSymbol);
+                history = GetHistoryThroughDataConsolidator(historyRequest, brokerageSymbol, dataSet);
                 break;
             case TickType.Trade:
-                history = GetAggregatedTradeBars(historyRequest, brokerageSymbol);
+                history = GetAggregatedTradeBars(historyRequest, brokerageSymbol, dataSet);
                 break;
             case TickType.Quote:
-                history = GetHistoryThroughDataConsolidator(historyRequest, brokerageSymbol);
+                history = GetHistoryThroughDataConsolidator(historyRequest, brokerageSymbol, dataSet);
                 break;
             case TickType.OpenInterest:
-                history = GetOpenInterestBars(historyRequest, brokerageSymbol);
+                history = GetOpenInterestBars(historyRequest, brokerageSymbol, dataSet);
                 break;
             default:
                 throw new ArgumentException("");
@@ -157,24 +174,24 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
         }
     }
 
-    private IEnumerable<BaseData> GetOpenInterestBars(HistoryRequest request, string brokerageSymbol)
+    private IEnumerable<BaseData> GetOpenInterestBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
-        foreach (var oi in _historicalApiClient.GetOpenInterest(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc))
+        foreach (var oi in _historicalApiClient.GetOpenInterest(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
             yield return new OpenInterest(oi.Header.UtcTime.ConvertFromUtc(request.DataTimeZone), request.Symbol, oi.Quantity);
         }
     }
 
-    private IEnumerable<BaseData> GetAggregatedTradeBars(HistoryRequest request, string brokerageSymbol)
+    private IEnumerable<BaseData> GetAggregatedTradeBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
         var period = request.Resolution.ToTimeSpan();
-        foreach (var b in _historicalApiClient.GetHistoricalOhlcvBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, request.Resolution, request.TickType))
+        foreach (var b in _historicalApiClient.GetHistoricalOhlcvBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, request.Resolution, dataBentoDataSet))
         {
             yield return new TradeBar(b.Header.UtcTime.ConvertFromUtc(request.DataTimeZone), request.Symbol, b.Open, b.High, b.Low, b.Close, b.Volume, period);
         }
     }
 
-    private IEnumerable<BaseData>? GetHistoryThroughDataConsolidator(HistoryRequest request, string brokerageSymbol)
+    private IEnumerable<BaseData>? GetHistoryThroughDataConsolidator(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
         IDataConsolidator consolidator;
         IEnumerable<BaseData> history;
@@ -184,14 +201,14 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
             consolidator = request.Resolution != Resolution.Tick
                 ? new TickConsolidator(request.Resolution.ToTimeSpan())
                 : FilteredIdentityDataConsolidator.ForTickType(request.TickType);
-            history = GetTrades(request, brokerageSymbol);
+            history = GetTrades(request, brokerageSymbol, dataBentoDataSet);
         }
         else
         {
             consolidator = request.Resolution != Resolution.Tick
                 ? new TickQuoteBarConsolidator(request.Resolution.ToTimeSpan())
                 : FilteredIdentityDataConsolidator.ForTickType(request.TickType);
-            history = GetQuotes(request, brokerageSymbol);
+            history = GetQuotes(request, brokerageSymbol, dataBentoDataSet);
         }
 
         BaseData? consolidatedData = null;
@@ -218,9 +235,9 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
     /// <summary>
     /// Gets the trade ticks that will potentially be aggregated for the specified history request
     /// </summary>
-    private IEnumerable<BaseData> GetTrades(HistoryRequest request, string brokerageSymbol)
+    private IEnumerable<BaseData> GetTrades(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
-        foreach (var t in _historicalApiClient.GetTickBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc))
+        foreach (var t in _historicalApiClient.GetTickBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
             yield return new Tick(t.Header.UtcTime.ConvertFromUtc(request.DataTimeZone), request.Symbol, "", "", t.Size, t.Price);
         }
@@ -229,9 +246,9 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
     /// <summary>
     /// Gets the quote ticks that will potentially be aggregated for the specified history request
     /// </summary>
-    private IEnumerable<BaseData> GetQuotes(HistoryRequest request, string brokerageSymbol)
+    private IEnumerable<BaseData> GetQuotes(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
-        foreach (var quoteBar in _historicalApiClient.GetTickBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc))
+        foreach (var quoteBar in _historicalApiClient.GetTickBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
             var time = quoteBar.Header.UtcTime.ConvertFromUtc(request.DataTimeZone);
             foreach (var level in quoteBar.Levels)

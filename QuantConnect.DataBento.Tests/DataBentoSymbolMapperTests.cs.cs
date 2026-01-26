@@ -53,4 +53,14 @@ public class DataBentoSymbolMapperTests
         Assert.IsNotEmpty(brokerageSymbol);
         Assert.AreEqual(expectedBrokerageSymbol, brokerageSymbol);
     }
+
+    [TestCase(Market.CME, "GLBX.MDP3", true)]
+    [TestCase(Market.EUREX, "XEUR.EOBI", true)]
+    [TestCase(Market.USA, null, false)]
+    public void ReturnsCorrectDataBentoDataSet(string market, string expectedDataSet, bool expectedExist)
+    {
+        var actualExist = _symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(market, out var actualDataSet);
+        Assert.AreEqual(expectedExist, actualExist);
+        Assert.AreEqual(expectedDataSet, actualDataSet);
+    }
 }
