@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
@@ -28,7 +28,7 @@ public class TestSetup
     [OneTimeSetUp]
     public void GlobalSetup()
     {
-        Log.DebuggingEnabled = true;
+        Log.DebuggingEnabled = Config.GetBool("debug-mode");
         Log.LogHandler = new CompositeLogHandler();
         Log.Trace("TestSetup(): starting...");
         ReloadConfiguration();

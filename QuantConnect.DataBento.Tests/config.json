@@ -3,5 +3,6 @@
   "job-user-id": "",
   "api-access-token": "",
   "job-organization-id": "",
-  "databento-api-key": ""
+  "databento-api-key": "",
+  "debug-mode": false
 }
