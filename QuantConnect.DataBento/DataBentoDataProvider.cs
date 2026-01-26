@@ -201,11 +201,6 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// <returns>The new enumerator for this subscription request</returns>
     public IEnumerator<BaseData>? Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
     {
-        if (!IsSupported(dataConfig.SecurityType, dataConfig.Type, dataConfig.TickType, dataConfig.Resolution))
-        {
-            return null;
-        }
-
         lock (_sessionLock)
         {
             if (!_sessionStarted)
@@ -252,33 +247,6 @@ public partial class DataBentoProvider : IDataQueueHandler
         _dataAggregator?.DisposeSafely();
         _subscriptionManager?.DisposeSafely();
         _client?.DisposeSafely();
-    }
-
-    /// <summary>
-    /// Determines if the specified subscription is supported
-    /// </summary>
-    private bool IsSupported(SecurityType securityType, Type dataType, TickType tickType, Resolution resolution)
-    {
-        // Check supported data types
-        if (dataType != typeof(TradeBar) &&
-            dataType != typeof(QuoteBar) &&
-            dataType != typeof(Tick) &&
-            dataType != typeof(OpenInterest))
-        {
-            throw new NotSupportedException($"Unsupported data type: {dataType}");
-        }
-
-        // Warn about potential limitations for tick data
-        // I'm mimicing polygon implementation with this
-        if (!_potentialUnsupportedResolutionMessageLogged)
-        {
-            _potentialUnsupportedResolutionMessageLogged = true;
-            Log.Trace("DataBentoDataProvider.IsSupported(): " +
-                $"Subscription for {securityType}-{dataType}-{tickType}-{resolution} will be attempted. " +
-                $"An Advanced DataBento subscription plan is required to stream tick data.");
-        }
-
-        return true;
     }
 
     /// <summary>
