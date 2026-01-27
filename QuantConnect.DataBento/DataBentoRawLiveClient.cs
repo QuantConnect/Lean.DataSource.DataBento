@@ -261,6 +261,8 @@ public class DataBentoRawLiveClient : IDisposable
     {
         try
         {
+            // Please note there is no unsubscribe method. Subscriptions end when the TCP connection closes.
+
             if (_subscriptions.TryRemove(symbol, out _))
             {
                 Log.Debug($"DataBentoRawLiveClient.Unsubscribe(): Unsubscribed from {symbol}");

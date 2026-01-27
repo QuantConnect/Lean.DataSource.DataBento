@@ -16,6 +16,7 @@
 using NUnit.Framework;
 using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
+using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 
@@ -145,5 +146,50 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(42566722, res.Header.InstrumentId);
         Assert.AreEqual(470m, res.Quantity);
         Assert.AreEqual(StatisticType.OpenInterest, res.StatType);
+    }
+
+    [Test]
+    public void DeserializeLiveHeartbeatMessage()
+    {
+        var json = @"{""hd"":{""ts_event"":""1769176693139629181"",""rtype"":23,""publisher_id"":0,""instrument_id"":0},""msg"":""Heartbeat""}";
+
+        var res = json.DeserializeKebabCase<HeartbeatMessage>();
+
+        Assert.IsNotNull(res);
+        Assert.AreEqual(1769176693139629181, res.Header.TsEvent);
+        Assert.AreEqual(RecordType.System, res.Header.Rtype);
+        Assert.AreEqual(0, res.Header.PublisherId);
+        Assert.AreEqual(0, res.Header.InstrumentId);
+        Assert.AreEqual("Heartbeat", res.Msg);
+    }
+
+    [TestCase("success=0|error=Unknown subscription param 'sssauth'", false)]
+    [TestCase("success=0|error=Authentication failed.", false)]
+    [TestCase("success=1|session_id=1769508116", true)]
+    public void ParsePotentialAuthenticationMessageResponses(string authenticationResponse, bool success)
+    {
+        var auth = new AuthenticationMessageResponse(authenticationResponse);
+
+        if (success)
+        {
+            Assert.IsTrue(auth.Success);
+            Assert.AreNotEqual(0, auth.SessionId);
+        }
+        else
+        {
+            Assert.IsFalse(auth.Success);
+            Assert.That(auth.Error, Is.Not.Null.And.Not.Empty);
+        }
+    }
+
+    [TestCase("cram=HCxTgxMcqglVMTMeaDZ2ICmcnrW8j92e", "auth=a6c5c23e06854dc0310e11ce6d3081509e415a5a37a323bb94bc90f64c9214d4-12345|dataset=GLBX.MDP3|pretty_px=1|encoding=json|heartbeat_interval_s=5")]
+    [TestCase("cram=HCxTgxMcqglVMTMeaDZ2ICmcnrW8j92e\n", "auth=a6c5c23e06854dc0310e11ce6d3081509e415a5a37a323bb94bc90f64c9214d4-12345|dataset=GLBX.MDP3|pretty_px=1|encoding=json|heartbeat_interval_s=5")]
+    public void ParsePotentialCramChallenges(string challenge, string expectedString)
+    {
+        var auth = new AuthenticationMessageRequest(challenge, "my-api-key-12345", "GLBX.MDP3");
+
+        var actualString = auth.ToString();
+
+        Assert.AreEqual(expectedString, actualString);
     }
 }

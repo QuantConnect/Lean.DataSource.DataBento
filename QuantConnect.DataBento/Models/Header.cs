@@ -13,6 +13,8 @@
  * limitations under the License.
 */
 
+using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
+
 namespace QuantConnect.Lean.DataSource.DataBento.Models;
 
 /// <summary>
@@ -29,7 +31,7 @@ public sealed class Header
     /// <summary>
     /// Record type identifier defining the data schema (e.g. trade, quote, bar).
     /// </summary>
-    public int Rtype { get; set; }
+    public RecordType Rtype { get; set; }
 
     /// <summary>
     /// DataBento publisher (exchange / data source) identifier.
