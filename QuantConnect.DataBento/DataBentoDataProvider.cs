@@ -14,17 +14,24 @@
  *
 */
 
-using NodaTime;
-using QuantConnect.Data;
+using System.Net;
+using System.Text;
+using Newtonsoft.Json;
+using QuantConnect.Api;
 using QuantConnect.Util;
+using QuantConnect.Data;
+using Newtonsoft.Json.Linq;
 using QuantConnect.Logging;
 using QuantConnect.Packets;
 using QuantConnect.Interfaces;
-using QuantConnect.Securities;
-using QuantConnect.Data.Market;
 using QuantConnect.Configuration;
+using System.Security.Cryptography;
+using System.Net.NetworkInformation;
 using System.Collections.Concurrent;
+using QuantConnect.Brokerages.LevelOneOrderBook;
 using QuantConnect.Lean.DataSource.DataBento.Api;
+using QuantConnect.Lean.DataSource.DataBento.Models;
+using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
 
@@ -44,21 +51,27 @@ public partial class DataBentoProvider : IDataQueueHandler
 
     private readonly DataBentoSymbolMapper _symbolMapper = new();
 
-    private readonly IDataAggregator _dataAggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(
-        Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager"), forceTypeNameOnExisting: false);
-    private EventBasedDataQueueHandlerSubscriptionManager _subscriptionManager;
-    private DataBentoRawLiveClient _client;
-    private bool _potentialUnsupportedResolutionMessageLogged;
-    private bool _sessionStarted = false;
-    private readonly object _sessionLock = new();
-    private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
-    private readonly ConcurrentDictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
+    private readonly ConcurrentDictionary<string, Symbol> _pendingSubscriptions = [];
+
+    private readonly Dictionary<uint, Symbol> _subscribedSymbolsByDataBentoInstrumentId = [];
+
+    /// <summary>
+    /// Manages Level 1 market data subscriptions and routing of updates to the shared <see cref="IDataAggregator"/>.
+    /// Responsible for tracking and updating individual <see cref="LevelOneMarketData"/> instances per symbol.
+    /// </summary>
+    private LevelOneServiceManager _levelOneServiceManager;
+
+    private IDataAggregator _aggregator;
+
+    private LiveAPIClient _liveApiClient;
+
     private bool _initialized;
 
     /// <summary>
     /// Returns true if we're currently connected to the Data Provider
     /// </summary>
-    public bool IsConnected => _client?.IsConnected == true;
+    public bool IsConnected => _liveApiClient.IsConnected;
+
 
     /// <summary>
     /// Initializes a new instance of the DataBentoProvider
@@ -86,74 +99,50 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// </summary>
     private void Initialize(string apiKey)
     {
-        Log.Debug("DataBentoProvider.Initialize(): Starting initialization");
-        _subscriptionManager = new EventBasedDataQueueHandlerSubscriptionManager()
+        ValidateSubscription();
+
+        _aggregator = Composer.Instance.GetPart<IDataAggregator>();
+        if (_aggregator == null)
         {
-            SubscribeImpl = (symbols, tickType) =>
-            {
-                return SubscriptionLogic(symbols, tickType);
-            },
-            UnsubscribeImpl = (symbols, tickType) =>
-            {
-                return UnsubscribeLogic(symbols, tickType);
-            }
-        };
-
-        // Initialize the live client
-        _client = new DataBentoRawLiveClient(apiKey);
-        _client.DataReceived += OnDataReceived;
-
-        // Connect to live gateway
-        Log.Debug("DataBentoProvider.Initialize(): Attempting connection to DataBento live gateway");
-        var cancellationTokenSource = new CancellationTokenSource();
-        Task.Factory.StartNew(() =>
-        {
-            try
-            {
-                var connected = _client.Connect();
-                Log.Debug($"DataBentoProvider.Initialize(): Connect() returned {connected}");
-
-                if (connected)
-                {
-                    Log.Debug("DataBentoProvider.Initialize(): Successfully connected to DataBento live gateway");
-                }
-                else
-                {
-                    Log.Error("DataBentoProvider.Initialize(): Failed to connect to DataBento live gateway");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"DataBentoProvider.Initialize(): Exception during Connect(): {ex.Message}\n{ex.StackTrace}");
-            }
-        },
-        cancellationTokenSource.Token,
-        TaskCreationOptions.LongRunning,
-        TaskScheduler.Default);
-
-        _historicalApiClient = new(apiKey);
-        _initialized = true;
-
-        Log.Debug("DataBentoProvider.Initialize(): Initialization complete");
-    }
-
-    /// <summary>
-    /// Logic to unsubscribe from the specified symbols
-    /// </summary>
-    public bool UnsubscribeLogic(IEnumerable<Symbol> symbols, TickType tickType)
-    {
-        foreach (var symbol in symbols)
-        {
-            Log.Debug($"DataBentoProvider.UnsubscribeImpl(): Processing symbol {symbol}");
-            if (_client?.IsConnected != true)
-            {
-                throw new InvalidOperationException($"DataBentoProvider.UnsubscribeImpl(): Client is not connected. Cannot unsubscribe from {symbol}");
-            }
-
-            _client.Unsubscribe(symbol);
+            var aggregatorName = Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager");
+            Log.Trace($"{nameof(DataBentoProvider)}.{nameof(Initialize)}: found no data aggregator instance, creating {aggregatorName}");
+            _aggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(aggregatorName);
         }
 
-        return true;
+        _liveApiClient = new LiveAPIClient(apiKey, HandleLevelOneData);
+        _liveApiClient.SymbolMappingConfirmation += OnSymbolMappingConfirmation;
+
+        _historicalApiClient = new(apiKey);
+
+        _levelOneServiceManager = new LevelOneServiceManager(
+            _aggregator,
+            (symbols, _) => Subscribe(symbols),
+            (symbols, _) => Unsubscribe(symbols));
+
+        _initialized = true;
+    }
+
+    private void OnSymbolMappingConfirmation(object? _, SymbolMappingConfirmationEventArgs smce)
+    {
+        if (_pendingSubscriptions.TryRemove(smce.Symbol, out var symbol))
+        {
+            _subscribedSymbolsByDataBentoInstrumentId[smce.InstrumentId] = symbol;
+        }
+    }
+
+    private void HandleLevelOneData(LevelOneData levelOneData)
+    {
+        if (_subscribedSymbolsByDataBentoInstrumentId.TryGetValue(levelOneData.Header.InstrumentId, out var symbol))
+        {
+            var time = levelOneData.Header.UtcTime;
+
+            _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
+
+            foreach (var l in levelOneData.Levels)
+            {
+                _levelOneServiceManager.HandleQuote(symbol, time, l.BidPx, l.BidSz, l.AskPx, l.AskSz);
+            }
+        }
     }
 
     /// <summary>
@@ -174,23 +163,37 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// <summary>
     /// Logic to subscribe to the specified symbols
     /// </summary>
-    public bool SubscriptionLogic(IEnumerable<Symbol> symbols, TickType tickType)
+    public bool Subscribe(IEnumerable<Symbol> symbols)
     {
-        if (_client?.IsConnected != true)
-        {
-            Log.Error("DataBentoProvider.SubscriptionLogic(): Client is not connected. Cannot subscribe to symbols");
-            return false;
-        }
-
         foreach (var symbol in symbols)
         {
-            if (!CanSubscribe(symbol))
+            if (!TryGetDataBentoDataSet(symbol, out var dataSet))
             {
-                Log.Error($"DataBentoProvider.SubscriptionLogic(): Unsupported subscription: {symbol}");
-                return false;
+                throw new ArgumentException($"No DataBento dataset mapping found for symbol {symbol} in market {symbol.ID.Market}. Cannot subscribe.");
             }
 
-            _client.Subscribe(symbol, tickType);
+            var brokerageSymbol = _symbolMapper.GetBrokerageSymbol(symbol);
+
+            _pendingSubscriptions[brokerageSymbol] = symbol;
+
+            _liveApiClient.Subscribe(dataSet, brokerageSymbol);
+        }
+
+        return true;
+    }
+
+    public bool Unsubscribe(IEnumerable<Symbol> symbols)
+    {
+        // Please note there is no unsubscribe method. Subscriptions end when the TCP connection closes.
+
+        var symbolsToRemove = symbols.ToHashSet();
+
+        foreach (var (instrumentId, symbol) in _subscribedSymbolsByDataBentoInstrumentId)
+        {
+            if (symbolsToRemove.Contains(symbol))
+            {
+                _subscribedSymbolsByDataBentoInstrumentId.Remove(instrumentId);
+            }
         }
 
         return true;
@@ -216,17 +219,13 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// <returns>The new enumerator for this subscription request</returns>
     public IEnumerator<BaseData>? Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
     {
-        lock (_sessionLock)
+        if (!CanSubscribe(dataConfig.Symbol))
         {
-            if (!_sessionStarted)
-            {
-                Log.Debug("DataBentoProvider.SubscriptionLogic(): Starting session");
-                _sessionStarted = _client.StartSession();
-            }
+            return null;
         }
 
-        var enumerator = _dataAggregator.Add(dataConfig, newDataAvailableHandler);
-        _subscriptionManager.Subscribe(dataConfig);
+        var enumerator = _aggregator.Add(dataConfig, newDataAvailableHandler);
+        _levelOneServiceManager.Subscribe(dataConfig);
 
         return enumerator;
     }
@@ -237,9 +236,8 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// <param name="dataConfig">Subscription config to be removed</param>
     public void Unsubscribe(SubscriptionDataConfig dataConfig)
     {
-        Log.Debug($"DataBentoProvider.Unsubscribe(): Received unsubscription request for {dataConfig.Symbol}, Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
-        _subscriptionManager.Unsubscribe(dataConfig);
-        _dataAggregator.Remove(dataConfig);
+        _levelOneServiceManager.Unsubscribe(dataConfig);
+        _aggregator.Remove(dataConfig);
     }
 
     /// <summary>
@@ -252,6 +250,13 @@ public partial class DataBentoProvider : IDataQueueHandler
         {
             return;
         }
+
+        if (!job.BrokerageData.TryGetValue("databento-api-key", out var apiKey) || string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new ArgumentException("The DataBento API key is missing from the brokerage data.");
+        }
+
+        Initialize(apiKey);
     }
 
     /// <summary>
@@ -259,81 +264,150 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// </summary>
     public void Dispose()
     {
-        _dataAggregator?.DisposeSafely();
-        _subscriptionManager?.DisposeSafely();
-        _client?.DisposeSafely();
+        _levelOneServiceManager?.DisposeSafely();
+        _aggregator?.DisposeSafely();
+        _liveApiClient?.DisposeSafely();
+        _historicalApiClient?.DisposeSafely();
     }
 
-    /// <summary>
-    /// Converts the given UTC time into the symbol security exchange time zone
-    /// </summary>
-    private DateTime GetTickTime(Symbol symbol, DateTime utcTime)
+    private class ModulesReadLicenseRead : RestResponse
     {
-        DateTimeZone exchangeTimeZone;
-        lock (_symbolExchangeTimeZones)
-        {
-            if (!_symbolExchangeTimeZones.TryGetValue(symbol, out exchangeTimeZone))
-            {
-                // read the exchange time zone from market-hours-database
-                if (_marketHoursDatabase.TryGetEntry(symbol.ID.Market, symbol, symbol.SecurityType, out var entry))
-                {
-                    exchangeTimeZone = entry.ExchangeHours.TimeZone;
-                }
-                // If there is no entry for the given Symbol, default to New York
-                else
-                {
-                    exchangeTimeZone = TimeZones.NewYork;
-                }
+        [JsonProperty(PropertyName = "license")]
+        public string License;
 
-                _symbolExchangeTimeZones[symbol] = exchangeTimeZone;
-            }
-        }
-
-        return utcTime.ConvertFromUtc(exchangeTimeZone);
+        [JsonProperty(PropertyName = "organizationId")]
+        public string OrganizationId;
     }
 
     /// <summary>
-    /// Handles data received from the live client
+    /// Validate the user of this project has permission to be using it via our web API.
     /// </summary>
-    private void OnDataReceived(object _, BaseData data)
+    private static void ValidateSubscription()
     {
         try
         {
-            switch (data)
+            const int productId = 306;
+            var userId = Globals.UserId;
+            var token = Globals.UserToken;
+            var organizationId = Globals.OrganizationID;
+            // Verify we can authenticate with this user and token
+            var api = new ApiConnection(userId, token);
+            if (!api.Connected)
             {
-                case Tick tick:
-                    tick.Time = GetTickTime(tick.Symbol, tick.Time);
-                    lock (_dataAggregator)
+                throw new ArgumentException("Invalid api user id or token, cannot authenticate subscription.");
+            }
+            // Compile the information we want to send when validating
+            var information = new Dictionary<string, object>()
+                {
+                    {"productId", productId},
+                    {"machineName", Environment.MachineName},
+                    {"userName", Environment.UserName},
+                    {"domainName", Environment.UserDomainName},
+                    {"os", Environment.OSVersion}
+                };
+            // IP and Mac Address Information
+            try
+            {
+                var interfaceDictionary = new List<Dictionary<string, object>>();
+                foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(nic => nic.OperationalStatus == OperationalStatus.Up))
+                {
+                    var interfaceInformation = new Dictionary<string, object>();
+                    // Get UnicastAddresses
+                    var addresses = nic.GetIPProperties().UnicastAddresses
+                        .Select(uniAddress => uniAddress.Address)
+                        .Where(address => !IPAddress.IsLoopback(address)).Select(x => x.ToString());
+                    // If this interface has non-loopback addresses, we will include it
+                    if (!addresses.IsNullOrEmpty())
                     {
-                        _dataAggregator.Update(tick);
+                        interfaceInformation.Add("unicastAddresses", addresses);
+                        // Get MAC address
+                        interfaceInformation.Add("MAC", nic.GetPhysicalAddress().ToString());
+                        // Add Interface name
+                        interfaceInformation.Add("name", nic.Name);
+                        // Add these to our dictionary
+                        interfaceDictionary.Add(interfaceInformation);
                     }
-                    // Log.Trace($"DataBentoProvider.OnDataReceived(): Updated tick - Symbol: {tick.Symbol}, " +
-                    //         $"TickType: {tick.TickType}, Price: {tick.Value}, Quantity: {tick.Quantity}");
-                    break;
+                }
+                information.Add("networkInterfaces", interfaceDictionary);
+            }
+            catch (Exception)
+            {
+                // NOP, not necessary to crash if fails to extract and add this information
+            }
+            // Include our OrganizationId if specified
+            if (!string.IsNullOrEmpty(organizationId))
+            {
+                information.Add("organizationId", organizationId);
+            }
 
-                case TradeBar tradeBar:
-                    tradeBar.Time = GetTickTime(tradeBar.Symbol, tradeBar.Time);
-                    tradeBar.EndTime = GetTickTime(tradeBar.Symbol, tradeBar.EndTime);
-                    lock (_dataAggregator)
-                    {
-                        _dataAggregator.Update(tradeBar);
-                    }
-                    // Log.Trace($"DataBentoProvider.OnDataReceived(): Updated TradeBar - Symbol: {tradeBar.Symbol}, " +
-                    //         $"O:{tradeBar.Open} H:{tradeBar.High} L:{tradeBar.Low} C:{tradeBar.Close} V:{tradeBar.Volume}");
-                    break;
+            // Create HTTP request
+            using var request = ApiUtils.CreateJsonPostRequest("modules/license/read", information);
 
-                default:
-                    data.Time = GetTickTime(data.Symbol, data.Time);
-                    lock (_dataAggregator)
-                    {
-                        _dataAggregator.Update(data);
-                    }
-                    break;
+            api.TryRequest(request, out ModulesReadLicenseRead result);
+            if (!result.Success)
+            {
+                throw new InvalidOperationException($"Request for subscriptions from web failed, Response Errors : {string.Join(',', result.Errors)}");
+            }
+
+            var encryptedData = result.License;
+            // Decrypt the data we received
+            DateTime? expirationDate = null;
+            long? stamp = null;
+            bool? isValid = null;
+            if (encryptedData != null)
+            {
+                // Fetch the org id from the response if it was not set, we need it to generate our validation key
+                if (string.IsNullOrEmpty(organizationId))
+                {
+                    organizationId = result.OrganizationId;
+                }
+                // Create our combination key
+                var password = $"{token}-{organizationId}";
+                var key = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+                // Split the data
+                var info = encryptedData.Split("::");
+                var buffer = Convert.FromBase64String(info[0]);
+                var iv = Convert.FromBase64String(info[1]);
+                // Decrypt our information
+                using var aes = new AesManaged();
+                var decryptor = aes.CreateDecryptor(key, iv);
+                using var memoryStream = new MemoryStream(buffer);
+                using var cryptoStream = new CryptoStream(memoryStream, decryptor, CryptoStreamMode.Read);
+                using var streamReader = new StreamReader(cryptoStream);
+                var decryptedData = streamReader.ReadToEnd();
+                if (!decryptedData.IsNullOrEmpty())
+                {
+                    var jsonInfo = JsonConvert.DeserializeObject<JObject>(decryptedData);
+                    expirationDate = jsonInfo["expiration"]?.Value<DateTime>();
+                    isValid = jsonInfo["isValid"]?.Value<bool>();
+                    stamp = jsonInfo["stamped"]?.Value<int>();
+                }
+            }
+            // Validate our conditions
+            if (!expirationDate.HasValue || !isValid.HasValue || !stamp.HasValue)
+            {
+                throw new InvalidOperationException("Failed to validate subscription.");
+            }
+
+            var nowUtc = DateTime.UtcNow;
+            var timeSpan = nowUtc - Time.UnixTimeStampToDateTime(stamp.Value);
+            if (timeSpan > TimeSpan.FromHours(12))
+            {
+                throw new InvalidOperationException("Invalid API response.");
+            }
+            if (!isValid.Value)
+            {
+                throw new ArgumentException($"Your subscription is not valid, please check your product subscriptions on our website.");
+            }
+            if (expirationDate < nowUtc)
+            {
+                throw new ArgumentException($"Your subscription expired {expirationDate}, please renew in order to use this product.");
             }
         }
-        catch (Exception ex)
+        catch (Exception e)
         {
-            Log.Error($"DataBentoProvider.OnDataReceived(): Error updating data aggregator: {ex.Message}\n{ex.StackTrace}");
+            Log.Error($"PolygonDataProvider.ValidateSubscription(): Failed during validation, shutting down. Error : {e.Message}");
+            throw;
         }
     }
 }

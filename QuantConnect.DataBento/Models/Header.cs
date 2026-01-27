@@ -24,7 +24,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 public sealed class Header
 {
     /// <summary>
-    /// Event timestamp in nanoseconds since Unix epoch (UTC).
+    /// The matching-engine-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
     /// </summary>
     public long TsEvent { get; set; }
 
@@ -41,7 +41,7 @@ public sealed class Header
     /// <summary>
     /// Internal instrument identifier for the symbol.
     /// </summary>
-    public long InstrumentId { get; set; }
+    public uint InstrumentId { get; set; }
 
     /// <summary>
     /// Event time converted to UTC <see cref="DateTime"/>.

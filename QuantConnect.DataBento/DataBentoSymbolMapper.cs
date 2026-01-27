@@ -67,28 +67,6 @@ public class DataBentoSymbolMapper : ISymbolMapper
     public Symbol GetLeanSymbol(string brokerageSymbol, SecurityType securityType, string market,
         DateTime expirationDate = new DateTime(), decimal strike = 0, OptionRight optionRight = 0)
     {
-        switch (securityType)
-        {
-            case SecurityType.Future:
-                return Symbol.CreateFuture(brokerageSymbol, market, expirationDate);
-            default:
-                throw new Exception($"The unsupported security type: {securityType}");
-        }
-    }
-
-    /// <summary>
-    /// Converts a brokerage future symbol to a Lean symbol instance
-    /// </summary>
-    /// <param name="brokerageSymbol">The brokerage symbol</param>
-    /// <returns>A new Lean Symbol instance</returns>
-    public Symbol GetLeanSymbolForFuture(string brokerageSymbol)
-    {
-        // ignore futures spreads
-        if (brokerageSymbol.Contains("-"))
-        {
-            return null;
-        }
-
-        return SymbolRepresentation.ParseFutureSymbol(brokerageSymbol);
+        throw new NotImplementedException("This method is not used in the current implementation.");
     }
 }

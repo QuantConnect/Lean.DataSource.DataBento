@@ -31,4 +31,15 @@ public static class JsonSettings
     {
         ContractResolver = SnakeCaseContractResolver.Instance
     };
+
+    /// <summary>
+    /// Gets a reusable instance of <see cref="JsonSerializerSettings"/> that uses
+    /// <see cref="SnakeCaseContractResolver"/> for snake-case property name formatting
+    /// and custom <see cref="LiveDataSnakeCase"/> converter.
+    /// </summary>
+    public static readonly JsonSerializerSettings LiveDataSnakeCase = new()
+    {
+        ContractResolver = SnakeCaseContractResolver.Instance,
+        Converters = { new Converters.LiveDataConverter() }
+    };
 }

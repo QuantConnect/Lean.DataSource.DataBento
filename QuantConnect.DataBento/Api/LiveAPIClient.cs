@@ -16,6 +16,8 @@
 
 using QuantConnect.Util;
 using QuantConnect.Logging;
+using QuantConnect.Lean.DataSource.DataBento.Models;
+using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Api;
 
@@ -25,9 +27,16 @@ public sealed class LiveAPIClient : IDisposable
 
     private readonly Dictionary<string, LiveDataTcpClientWrapper> _tcpClientByDataSet = [];
 
-    public LiveAPIClient(string apiKey)
+    private readonly Action<LevelOneData> _levelOneDataHandler;
+
+    public event EventHandler<SymbolMappingConfirmationEventArgs>? SymbolMappingConfirmation;
+
+    public bool IsConnected => _tcpClientByDataSet.Values.All(c => c.IsConnected);
+
+    public LiveAPIClient(string apiKey, Action<LevelOneData> levelOneDataHandler)
     {
         _apiKey = apiKey;
+        _levelOneDataHandler = levelOneDataHandler;
     }
 
     public void Dispose()
@@ -39,36 +48,52 @@ public sealed class LiveAPIClient : IDisposable
         _tcpClientByDataSet.Clear();
     }
 
-    public bool Start(string dataSet)
+    private LiveDataTcpClientWrapper EnsureDatasetConnection(string dataSet)
     {
-        LogTrace(nameof(Start), "Starting connection to DataBento live API");
-
-        if (_tcpClientByDataSet.TryGetValue(dataSet, out var existingClient) && existingClient.IsConnected)
+        if (_tcpClientByDataSet.TryGetValue(dataSet, out var liveDataTcpClient))
         {
-            LogTrace(nameof(Start), $"Already connected to DataBento live API (Dataset: {dataSet})");
-            return true;
+            return liveDataTcpClient;
         }
 
-        var liveDataTcpClient = new LiveDataTcpClientWrapper(dataSet, _apiKey);
+        LogTrace(nameof(EnsureDatasetConnection), "Starting connection to DataBento live API");
+
+        liveDataTcpClient = new LiveDataTcpClientWrapper(dataSet, _apiKey, MessageReceived);
         _tcpClientByDataSet[dataSet] = liveDataTcpClient;
         liveDataTcpClient.Connect();
 
-        LogTrace(nameof(Start), $"Successfully connected to DataBento live API (Dataset: {dataSet})");
+        LogTrace(nameof(EnsureDatasetConnection), $"Successfully connected to DataBento live API (Dataset: {dataSet})");
 
-        return true;
+        return liveDataTcpClient;
     }
 
     public bool Subscribe(string dataSet, string symbol)
     {
-        if (!_tcpClientByDataSet.TryGetValue(dataSet, out var tcpClient) || !tcpClient.IsConnected)
+        EnsureDatasetConnection(dataSet).SubscribeOnMarketBestPriceLevelOne(symbol);
+        return true;
+    }
+
+    private void MessageReceived(string message)
+    {
+        var data = message.DeserializeSnakeCaseLiveData();
+
+        if (data == null)
         {
-            LogError(nameof(Subscribe), $"Not connected to DataBento live API (Dataset: {dataSet})");
-            return false;
+            LogError(nameof(MessageReceived), $"Failed to deserialize live data message: {message}");
+            return;
         }
 
-        tcpClient.SubscribeOnMarketBestPriceLevelOne(symbol);
-
-        return true;
+        switch (data)
+        {
+            case SymbolMappingMessage smm:
+                SymbolMappingConfirmation?.Invoke(this, new(smm.StypeInSymbol, smm.Header.InstrumentId));
+                break;
+            case LevelOneData lod:
+                _levelOneDataHandler?.Invoke(lod);
+                break;
+            default:
+                LogError(nameof(MessageReceived), $"Received unsupported record type: {data.Header.Rtype}. Message: {message}");
+                break;
+        }
     }
 
     private static void LogTrace(string method, string message)

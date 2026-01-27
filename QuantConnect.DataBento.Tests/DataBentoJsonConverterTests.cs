@@ -44,7 +44,7 @@ public class DataBentoJsonConverterTests
         Assert.IsNotNull(res);
 
         Assert.AreEqual(1738281600000000000m, res.Header.TsEvent);
-        Assert.AreEqual(35, res.Header.Rtype);
+        Assert.AreEqual(RecordType.OpenHighLowCloseVolume1Day, res.Header.Rtype);
         Assert.AreEqual(1, res.Header.PublisherId);
         Assert.AreEqual(42140878, res.Header.InstrumentId);
 
@@ -92,7 +92,7 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(1768137063449660443, res.TsRecv);
 
         Assert.AreEqual(1768137063107829777, res.Header.TsEvent);
-        Assert.AreEqual(1, res.Header.Rtype);
+        Assert.AreEqual(RecordType.MarketByPriceDepth1, res.Header.Rtype);
         Assert.AreEqual(1, res.Header.PublisherId);
         Assert.AreEqual(42140878, res.Header.InstrumentId);
 
@@ -141,7 +141,7 @@ public class DataBentoJsonConverterTests
 
 
         Assert.AreEqual(1768156232522476283, res.Header.TsEvent);
-        Assert.AreEqual(24, res.Header.Rtype);
+        Assert.AreEqual(RecordType.Statistics, res.Header.Rtype);
         Assert.AreEqual(1, res.Header.PublisherId);
         Assert.AreEqual(42566722, res.Header.InstrumentId);
         Assert.AreEqual(470m, res.Quantity);
@@ -191,5 +191,97 @@ public class DataBentoJsonConverterTests
         var actualString = auth.ToString();
 
         Assert.AreEqual(expectedString, actualString);
+    }
+
+    [Test]
+    public void DeserializeSymbolMappingMessage()
+    {
+        var json = @"{
+    ""hd"": {
+        ""ts_event"": ""1769546804979770503"",
+        ""rtype"": 22,
+        ""publisher_id"": 0,
+        ""instrument_id"": 42140878
+    },
+    ""stype_in_symbol"": ""ESH6"",
+    ""stype_out_symbol"": ""ESH6"",
+    ""start_ts"": ""18446744073709551615"",
+    ""end_ts"": ""18446744073709551615""
+}";
+
+        var marketData = json.DeserializeSnakeCaseLiveData();
+
+        Assert.IsNotNull(marketData);
+        Assert.AreEqual(1769546804979770503, marketData.Header.TsEvent);
+        Assert.AreEqual(RecordType.SymbolMapping, marketData.Header.Rtype);
+        Assert.AreEqual(0, marketData.Header.PublisherId);
+        Assert.AreEqual(42140878, marketData.Header.InstrumentId);
+
+        Assert.IsInstanceOf<SymbolMappingMessage>(marketData);
+
+        var sm = marketData as SymbolMappingMessage;
+
+        Assert.AreEqual("ESH6", sm.StypeInSymbol);
+        Assert.AreEqual("ESH6", sm.StypeOutSymbol);
+    }
+
+
+    [Test]
+    public void DeserializeMarketByPriceMessage()
+    {
+        var json = @"
+{
+    ""ts_recv"": ""1769546804990938439"",
+    ""hd"": {
+        ""ts_event"": ""1769546804990833083"",
+        ""rtype"": 1,
+        ""publisher_id"": 1,
+        ""instrument_id"": 42005017
+    },
+    ""action"": ""A"",
+    ""side"": ""A"",
+    ""depth"": 0,
+    ""price"": ""2676.400000000"",
+    ""size"": 1,
+    ""flags"": 128,
+    ""ts_in_delta"": 17695,
+    ""sequence"": 126257483,
+    ""levels"": [
+        {
+            ""bid_px"": ""2676.300000000"",
+            ""ask_px"": ""2676.400000000"",
+            ""bid_sz"": 14,
+            ""ask_sz"": 2,
+            ""bid_ct"": 8,
+            ""ask_ct"": 2
+        }
+    ]
+}";
+        var marketData = json.DeserializeSnakeCaseLiveData();
+
+        Assert.IsNotNull(marketData);
+        Assert.AreEqual(1769546804990833083, marketData.Header.TsEvent);
+        Assert.AreEqual(RecordType.MarketByPriceDepth1, marketData.Header.Rtype);
+        Assert.AreEqual(1, marketData.Header.PublisherId);
+        Assert.AreEqual(42005017, marketData.Header.InstrumentId);
+
+        Assert.IsInstanceOf<LevelOneData>(marketData);
+
+        var mbp = marketData as LevelOneData;
+        Assert.AreEqual('A', mbp.Action);
+        Assert.AreEqual('A', mbp.Side);
+        Assert.AreEqual(0, mbp.Depth);
+        Assert.AreEqual(2676.4m, mbp.Price);
+        Assert.AreEqual(1, mbp.Size);
+        Assert.AreEqual(128, mbp.Flags);
+        Assert.IsNotNull(mbp.Levels);
+        Assert.AreEqual(1, mbp.Levels.Count);
+        var level = mbp.Levels[0];
+        Assert.AreEqual(2676.3m, level.BidPx);
+        Assert.AreEqual(2676.4m, level.AskPx);
+        Assert.AreEqual(14, level.BidSz);
+        Assert.AreEqual(2, level.AskSz);
+        Assert.AreEqual(8, level.BidCt);
+        Assert.AreEqual(2, level.AskCt);
     }
 }

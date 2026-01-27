@@ -17,6 +17,7 @@ using System;
 using NUnit.Framework;
 using System.Threading;
 using QuantConnect.Configuration;
+using System.Collections.Generic;
 using QuantConnect.Lean.DataSource.DataBento.Api;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
@@ -44,7 +45,7 @@ public class DataBentoLiveAPIClientTests
             Assert.Inconclusive("Please set the 'databento-api-key' in your configuration to enable these tests.");
         }
 
-        _live = new LiveAPIClient(apiKey);
+        _live = new LiveAPIClient(apiKey, null);
     }
 
     [OneTimeTearDown]
@@ -54,12 +55,40 @@ public class DataBentoLiveAPIClientTests
     }
 
     [Test]
-    public void TestExample()
+    public void ShouldReceiveSymbolMappingConfirmation()
     {
         var dataAvailableEvent = new AutoResetEvent(false);
 
-        _live.Start(Dataset);
+        var subs = new Dictionary<string, uint>()
+        {
+            { Securities.Futures.Indices.SP500EMini + "H6", 0 },
+            { Securities.Futures.Indices.Russell2000EMini + "H6", 0 }
+        };
 
-        dataAvailableEvent.WaitOne(TimeSpan.FromSeconds(60));
+        void OnSymbolMappingConfirmation(object sender, Models.Live.SymbolMappingConfirmationEventArgs e)
+        {
+            if (subs.ContainsKey(e.Symbol))
+            {
+                subs[e.Symbol] = e.InstrumentId;
+                dataAvailableEvent.Set();
+            }
+        }
+
+        _live.SymbolMappingConfirmation += OnSymbolMappingConfirmation;
+
+        foreach (var s in subs.Keys)
+        {
+            _live.Subscribe(Dataset, s);
+            dataAvailableEvent.WaitOne(TimeSpan.FromSeconds(5));
+        }
+
+        dataAvailableEvent.WaitOne(TimeSpan.FromSeconds(1));
+
+        foreach (var instrumentId in subs.Values)
+        {
+            Assert.Greater(instrumentId, 0);
+        }
+
+        _live.SymbolMappingConfirmation -= OnSymbolMappingConfirmation;
     }
 }

@@ -21,8 +21,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 public sealed class LevelOneData : MarketDataRecord
 {
     /// <summary>
-    /// Timestamp when the message was received by the gateway,
-    /// expressed as nanoseconds since the UNIX epoch.
+    /// The capture-server-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
     /// </summary>
     public long TsRecv { get; set; }
 

@@ -25,7 +25,6 @@ namespace QuantConnect.Lean.DataSource.DataBento.Api;
 public sealed class LiveDataTcpClientWrapper : IDisposable
 {
     private const int DefaultPort = 13000;
-    private const int ReceiveBufferSize = 8192;
 
     private readonly string _gateway;
     private readonly string _dataSet;
@@ -33,30 +32,33 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
     private readonly TimeSpan _heartBeatInterval = TimeSpan.FromSeconds(10);
 
     private readonly TcpClient _tcpClient = new();
-    private readonly byte[] _receiveBuffer = new byte[ReceiveBufferSize];
     private readonly CancellationTokenSource _cancellationTokenSource = new();
-    private readonly char[] _newLine = Environment.NewLine.ToCharArray();
 
     private NetworkStream? _stream;
+    private StreamReader? _reader;
     private Task? _dataReceiverTask;
     private bool _isConnected;
+
+    private readonly Action<string> MessageReceived;
 
     /// <summary>
     /// Is client connected
     /// </summary>
     public bool IsConnected => _isConnected;
 
-    public LiveDataTcpClientWrapper(string dataSet, string apiKey)
+    public LiveDataTcpClientWrapper(string dataSet, string apiKey, Action<string> messageReceived)
     {
         _apiKey = apiKey;
         _dataSet = dataSet;
         _gateway = DetermineGateway(dataSet);
+        MessageReceived = messageReceived;
     }
 
     public void Connect()
     {
         _tcpClient.Connect(_gateway, DefaultPort);
         _stream = _tcpClient.GetStream();
+        _reader = new StreamReader(_stream, Encoding.ASCII);
 
         if (!Authenticate(_dataSet).SynchronouslyAwaitTask())
             throw new Exception("Authentication failed");
@@ -71,8 +73,8 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
     {
         _isConnected = false;
 
-        _stream?.Close();
-        _stream?.DisposeSafely();
+        _reader?.Close();
+        _reader?.DisposeSafely();
 
         _cancellationTokenSource?.Cancel();
         _cancellationTokenSource?.DisposeSafely();
@@ -113,7 +115,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
                     break;
                 }
 
-                LogTrace(methodName, $"Received: {line}");
+                MessageReceived.Invoke(line);
             }
         }
         catch (OperationCanceledException)
@@ -142,16 +144,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
     private async Task<string?> ReadDataAsync(CancellationToken cancellationToken)
     {
-        var numberOfBytesToRead = await _stream.ReadAsync(_receiveBuffer.AsMemory(0, _receiveBuffer.Length), cancellationToken).ConfigureAwait(false);
-
-        if (numberOfBytesToRead == 0)
-        {
-            return null;
-        }
-
-        using var memoryStream = new MemoryStream();
-        await memoryStream.WriteAsync(_receiveBuffer.AsMemory(0, numberOfBytesToRead), cancellationToken).ConfigureAwait(false);
-        return Encoding.ASCII.GetString(memoryStream.ToArray(), 0, numberOfBytesToRead).TrimEnd(_newLine);
+        return await _reader.ReadLineAsync(cancellationToken);
     }
 
     private void WriteData(string data)
