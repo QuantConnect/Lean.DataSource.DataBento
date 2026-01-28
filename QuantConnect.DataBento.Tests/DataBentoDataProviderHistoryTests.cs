@@ -38,7 +38,7 @@ public class DataBentoDataProviderHistoryTests
     [TearDown]
     public void TearDown()
     {
-        _historyDataProvider?.Dispose();
+        _historyDataProvider?.DisposeSafely();
     }
 
     internal static IEnumerable<TestCaseData> TestParameters

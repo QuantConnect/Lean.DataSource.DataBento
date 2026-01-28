@@ -16,6 +16,7 @@
 using System;
 using NUnit.Framework;
 using System.Threading;
+using QuantConnect.Util;
 using QuantConnect.Configuration;
 using System.Collections.Generic;
 using QuantConnect.Lean.DataSource.DataBento.Api;
@@ -51,7 +52,7 @@ public class DataBentoLiveAPIClientTests
     [OneTimeTearDown]
     public void OneTimeTearDown()
     {
-        _live.Dispose();
+        _live?.DisposeSafely();
     }
 
     [Test]

@@ -106,11 +106,12 @@ public partial class DataBentoProvider : IDataQueueHandler
         {
             var aggregatorName = Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager");
             Log.Trace($"{nameof(DataBentoProvider)}.{nameof(Initialize)}: found no data aggregator instance, creating {aggregatorName}");
-            _aggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(aggregatorName);
+            _aggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(aggregatorName, forceTypeNameOnExisting: false);
         }
 
         _liveApiClient = new LiveAPIClient(apiKey, HandleLevelOneData);
         _liveApiClient.SymbolMappingConfirmation += OnSymbolMappingConfirmation;
+        _liveApiClient.ConnectionLost += OnConnectionLost;
 
         _historicalApiClient = new(apiKey);
 
@@ -120,6 +121,17 @@ public partial class DataBentoProvider : IDataQueueHandler
             (symbols, _) => Unsubscribe(symbols));
 
         _initialized = true;
+    }
+
+    private void OnConnectionLost(object? _, ConnectionLostEventArgs cle)
+    {
+        LogTrace(nameof(OnConnectionLost), "The connection was lost. Starting ReSubscription process");
+
+        var symbols = _levelOneServiceManager.GetSubscribedSymbols();
+
+        Subscribe(symbols);
+
+        LogTrace(nameof(OnConnectionLost), $"Re-subscription completed successfully for {_levelOneServiceManager.Count} symbol(s).");
     }
 
     private void OnSymbolMappingConfirmation(object? _, SymbolMappingConfirmationEventArgs smce)

@@ -31,6 +31,8 @@ public sealed class LiveAPIClient : IDisposable
 
     public event EventHandler<SymbolMappingConfirmationEventArgs>? SymbolMappingConfirmation;
 
+    public event EventHandler<ConnectionLostEventArgs>? ConnectionLost;
+
     public bool IsConnected => _tcpClientByDataSet.Values.All(c => c.IsConnected);
 
     public LiveAPIClient(string apiKey, Action<LevelOneData> levelOneDataHandler)
@@ -50,16 +52,34 @@ public sealed class LiveAPIClient : IDisposable
 
     private LiveDataTcpClientWrapper EnsureDatasetConnection(string dataSet)
     {
-        if (_tcpClientByDataSet.TryGetValue(dataSet, out var liveDataTcpClient))
+        if (_tcpClientByDataSet.TryGetValue(dataSet, out var liveDataTcpClient) && liveDataTcpClient.IsConnected)
         {
             return liveDataTcpClient;
         }
 
         LogTrace(nameof(EnsureDatasetConnection), "Starting connection to DataBento live API");
 
-        liveDataTcpClient = new LiveDataTcpClientWrapper(dataSet, _apiKey, MessageReceived);
-        _tcpClientByDataSet[dataSet] = liveDataTcpClient;
+        if (liveDataTcpClient == null)
+        {
+            liveDataTcpClient = new LiveDataTcpClientWrapper(dataSet, _apiKey, MessageReceived);
+
+            liveDataTcpClient.ConnectionLost += (sender, message) =>
+            {
+                LogError(nameof(EnsureDatasetConnection), $"Connection lost to DataBento live API (Dataset: {dataSet}). Reason: {message}");
+                ConnectionLost?.Invoke(this, new ConnectionLostEventArgs(dataSet, message));
+            };
+
+            _tcpClientByDataSet[dataSet] = liveDataTcpClient;
+        }
+
         liveDataTcpClient.Connect();
+
+        if (!liveDataTcpClient.IsConnected)
+        {
+            var msg = $"Unable to establish a connection to the DataBento Live API (Dataset: {dataSet}).";
+            LogError(nameof(EnsureDatasetConnection), msg);
+            throw new Exception(msg);
+        }
 
         LogTrace(nameof(EnsureDatasetConnection), $"Successfully connected to DataBento live API (Dataset: {dataSet})");
 

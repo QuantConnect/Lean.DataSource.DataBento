@@ -31,7 +31,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
     private readonly string _apiKey;
     private readonly TimeSpan _heartBeatInterval = TimeSpan.FromSeconds(10);
 
-    private readonly TcpClient _tcpClient = new();
+    private TcpClient _tcpClient;
     private readonly CancellationTokenSource _cancellationTokenSource = new();
 
     private NetworkStream? _stream;
@@ -40,6 +40,8 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
     private bool _isConnected;
 
     private readonly Action<string> MessageReceived;
+
+    public event EventHandler<string>? ConnectionLost;
 
     /// <summary>
     /// Is client connected
@@ -56,17 +58,46 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
     public void Connect()
     {
-        _tcpClient.Connect(_gateway, DefaultPort);
-        _stream = _tcpClient.GetStream();
-        _reader = new StreamReader(_stream, Encoding.ASCII);
+        var attemptToConnect = 1;
+        var error = default(string);
+        do
+        {
+            try
+            {
+                _tcpClient = new(_gateway, DefaultPort);
+                _stream = _tcpClient.GetStream();
+                _reader = new StreamReader(_stream, Encoding.ASCII);
 
-        if (!Authenticate(_dataSet).SynchronouslyAwaitTask())
-            throw new Exception("Authentication failed");
+                if (!Authenticate(_dataSet).SynchronouslyAwaitTask())
+                    throw new Exception("Authentication failed");
 
-        _dataReceiverTask = new Task(async () => await DataReceiverAsync(_cancellationTokenSource.Token), _cancellationTokenSource.Token, TaskCreationOptions.LongRunning);
-        _dataReceiverTask.Start();
+                _dataReceiverTask = new Task(async () => await DataReceiverAsync(_cancellationTokenSource.Token), _cancellationTokenSource.Token, TaskCreationOptions.LongRunning);
+                _dataReceiverTask.Start();
 
-        _isConnected = true;
+                _isConnected = true;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+
+            var retryDelayMs = attemptToConnect * 2 * 1000;
+            LogError(nameof(Connect), $"Connection attempt #{attemptToConnect} failed. Retrying in {retryDelayMs} ms. Error: {error}");
+            _cancellationTokenSource.Token.WaitHandle.WaitOne(attemptToConnect * 2 * 1000);
+
+        } while (attemptToConnect++ < 5 && !_isConnected);
+    }
+
+    private void Close()
+    {
+        _isConnected = false;
+
+        _reader?.Close();
+        _reader?.DisposeSafely();
+
+        _dataReceiverTask?.DisposeSafely();
+        _tcpClient?.Close();
+        _tcpClient?.DisposeSafely();
     }
 
     public void Dispose()
@@ -98,7 +129,9 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
         var readTimeout = _heartBeatInterval.Add(TimeSpan.FromSeconds(5));
 
-        LogTrace(methodName, "Receiver started");
+        LogTrace(methodName, "Task Receiver started");
+
+        var errorMessage = string.Empty;
 
         try
         {
@@ -118,27 +151,22 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
                 MessageReceived.Invoke(line);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException oce)
         {
-            if (!_tcpClient.Connected)
-            {
-                LogError("DataReceiverAsync", "GG");
-            }
-
-            Log.Trace("DataBentoRawLiveClient.ProcessMessages(): Message processing cancelled");
-        }
-        catch (IOException ex) when (ex.InnerException is SocketException)
-        {
-            Log.Trace($"DataBentoRawLiveClient.ProcessMessages(): Socket exception: {ex.Message}");
+            errorMessage = $"Read timeout exceeded: Outer CancellationToken: {ct.IsCancellationRequested}, Read Timeout: {readTimeoutCts.IsCancellationRequested}";
+            LogTrace(methodName, errorMessage);
         }
         catch (Exception ex)
         {
-            Log.Error($"DataBentoRawLiveClient.ProcessMessages(): Error processing messages: {ex.Message}\n{ex.StackTrace}");
+            errorMessage += ex.Message;
+            LogError(methodName, $"Error processing messages: {ex.Message}\n{ex.StackTrace}");
         }
         finally
         {
-            LogTrace(methodName, "Receiver stopped");
+            LogTrace(methodName, "Task Receiver stopped");
+            Close();
             readTimeoutCts.Dispose();
+            ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient.Connected}"));
         }
     }
 

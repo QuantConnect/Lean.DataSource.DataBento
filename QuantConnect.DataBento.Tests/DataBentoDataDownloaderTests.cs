@@ -40,7 +40,7 @@ public class DataBentoDataDownloaderTests
     [TearDown]
     public void TearDown()
     {
-        _downloader?.Dispose();
+        _downloader?.DisposeSafely();
     }
 
     [TestCase(Resolution.Daily)]
