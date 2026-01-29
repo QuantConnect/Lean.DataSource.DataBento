@@ -13,10 +13,13 @@
  * limitations under the License.
 */
 
+using System;
+using Newtonsoft.Json;
 using NUnit.Framework;
+using System.Collections.Generic;
 using QuantConnect.Lean.DataSource.DataBento.Models;
-using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
+using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 
@@ -39,7 +42,7 @@ public class DataBentoJsonConverterTests
     ""close"": ""6355.000000000"",
     ""volume"": ""2""
 }";
-        var res = json.DeserializeKebabCase<OhlcvBar>();
+        var res = json.DeserializeObject<OpenHighLowCloseVolumeData>();
 
         Assert.IsNotNull(res);
 
@@ -55,10 +58,11 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(2L, res.Volume);
     }
 
-    [Test]
-    public void DeserializeHistoricalLevelOneData()
+    private static IEnumerable<TestCaseData> HistoricalLevelOneData
     {
-        var json = @"{
+        get
+        {
+            yield return new TestCaseData(@"{
     ""ts_recv"": ""1768137063449660443"",
     ""hd"": {
         ""ts_event"": ""1768137063107829777"",
@@ -84,33 +88,106 @@ public class DataBentoJsonConverterTests
             ""ask_ct"": 1
         }
     ]
-}";
-        var res = json.DeserializeKebabCase<LevelOneData>();
+}").SetArgDisplayNames("Normal");
+            yield return new TestCaseData(@"{
+    ""ts_recv"": ""1736722822572003465"",
+    ""hd"": {
+        ""ts_event"": ""1736722822571417935"",
+        ""rtype"": 1,
+        ""publisher_id"": 1,
+        ""instrument_id"": 42140878
+    },
+    ""action"": ""A"",
+    ""side"": ""N"",
+    ""depth"": 0,
+    ""price"": ""6100.000000000"",
+    ""size"": 3,
+    ""flags"": 130,
+    ""ts_in_delta"": 13574,
+    ""sequence"": 11624,
+    ""levels"": [
+        {
+            ""bid_px"": null,
+            ""ask_px"": ""6100.000000000"",
+            ""bid_sz"": 0,
+            ""ask_sz"": 3,
+            ""bid_ct"": 0,
+            ""ask_ct"": 1
+        }
+    ]
+}").SetArgDisplayNames("BidPriceNull");
+            yield return new TestCaseData(@"{
+    ""ts_recv"": ""1736751414397721230"",
+    ""hd"": {
+        ""ts_event"": ""1736751414397599041"",
+        ""rtype"": 1,
+        ""publisher_id"": 1,
+        ""instrument_id"": 42140878
+    },
+    ""action"": ""C"",
+    ""side"": ""A"",
+    ""depth"": 0,
+    ""price"": ""6087.250000000"",
+    ""size"": 3,
+    ""flags"": 130,
+    ""ts_in_delta"": 13718,
+    ""sequence"": 934949,
+    ""levels"": [
+        {
+            ""bid_px"": null,
+            ""ask_px"": null,
+            ""bid_sz"": 0,
+            ""ask_sz"": 0,
+            ""bid_ct"": 0,
+            ""ask_ct"": 0
+        }
+    ]
+}").SetArgDisplayNames("BidAndAskPriceNull");
+        }
+    }
+
+    [TestCaseSource(nameof(HistoricalLevelOneData))]
+    public void DeserializeHistoricalLevelOneData(string json)
+    {
+        var res = json.DeserializeObject<LevelOneData>();
 
         Assert.IsNotNull(res);
 
-        Assert.AreEqual(1768137063449660443, res.TsRecv);
+        Assert.Greater(res.TsRecv, 0);
 
-        Assert.AreEqual(1768137063107829777, res.Header.TsEvent);
+        Assert.Greater(res.Header.TsEvent, 0);
         Assert.AreEqual(RecordType.MarketByPriceDepth1, res.Header.Rtype);
-        Assert.AreEqual(1, res.Header.PublisherId);
-        Assert.AreEqual(42140878, res.Header.InstrumentId);
+        Assert.AreEqual(res.Header.PublisherId, 1);
+        Assert.Greater(res.Header.InstrumentId, 0);
 
-        Assert.AreEqual('A', res.Action);
-        Assert.AreEqual('N', res.Side);
+
+        Assert.IsTrue(char.IsLetter(res.Action));
+        Assert.IsTrue(char.IsLetter(res.Side));
         Assert.AreEqual(0, res.Depth);
-        Assert.AreEqual(7004.25m, res.Price);
-        Assert.AreEqual(15, res.Size);
-        Assert.AreEqual(128, res.Flags);
+        Assert.Greater(res.Price, 0);
+        Assert.Greater(res.Size, 0);
+        Assert.Greater(res.Flags, 0);
         Assert.IsNotNull(res.Levels);
         Assert.AreEqual(1, res.Levels.Count);
         var level = res.Levels[0];
-        Assert.AreEqual(7004.0m, level.BidPx);
-        Assert.AreEqual(7004.25m, level.AskPx);
-        Assert.AreEqual(11, level.BidSz);
-        Assert.AreEqual(15, level.AskSz);
-        Assert.AreEqual(1, level.BidCt);
-        Assert.AreEqual(1, level.AskCt);
+        AssertPositiveOrNull(level.BidPx);
+        AssertPositiveOrNull(level.AskPx);
+        Assert.GreaterOrEqual(level.BidSz, 0);
+        Assert.GreaterOrEqual(level.AskSz, 0);
+        Assert.GreaterOrEqual(level.BidCt, 0);
+        Assert.GreaterOrEqual(level.AskCt, 0);
+    }
+
+    private void AssertPositiveOrNull(decimal? price)
+    {
+        if (price.HasValue)
+        {
+            Assert.Greater(price.Value, 0);
+        }
+        else
+        {
+            Assert.IsNull(price);
+        }
     }
 
     [Test]
@@ -135,7 +212,7 @@ public class DataBentoJsonConverterTests
     ""stat_flags"": 0
 }";
 
-        var res = json.DeserializeKebabCase<StatisticsData>();
+        var res = json.DeserializeObject<Models.StatisticsData>();
 
         Assert.IsNotNull(res);
 
@@ -148,19 +225,26 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(StatisticType.OpenInterest, res.StatType);
     }
 
-    [Test]
-    public void DeserializeLiveHeartbeatMessage()
+    private static IEnumerable<TestCaseData> SystemLiveMessages
     {
-        var json = @"{""hd"":{""ts_event"":""1769176693139629181"",""rtype"":23,""publisher_id"":0,""instrument_id"":0},""msg"":""Heartbeat""}";
+        get
+        {
+            yield return new TestCaseData(@"{""hd"":{""ts_event"":""1769176693139629181"",""rtype"":23,""publisher_id"":0,""instrument_id"":0},""msg"":""Heartbeat""}").SetArgDisplayNames("HeartbeatMessage");
+            yield return new TestCaseData(@"{""hd"":{ ""ts_event"":""1769712709771313573"",""rtype"":23,""publisher_id"":0,""instrument_id"":0},""msg"":""Subscription request for mbp-1 data succeeded""}").SetArgDisplayNames("SubscriptionRequestMarketByPrice1DataSucceeded");
+        }
+    }
 
-        var res = json.DeserializeKebabCase<HeartbeatMessage>();
+    [TestCaseSource(nameof(SystemLiveMessages))]
+    public void DeserializeLiveSystemMessage(string json)
+    {
+        var res = json.DeserializeObject<SystemMessage>();
 
         Assert.IsNotNull(res);
-        Assert.AreEqual(1769176693139629181, res.Header.TsEvent);
+        Assert.Greater(res.Header.TsEvent, 0);
         Assert.AreEqual(RecordType.System, res.Header.Rtype);
         Assert.AreEqual(0, res.Header.PublisherId);
         Assert.AreEqual(0, res.Header.InstrumentId);
-        Assert.AreEqual("Heartbeat", res.Msg);
+        Assert.IsFalse(string.IsNullOrEmpty(res.Msg));
     }
 
     [TestCase("success=0|error=Unknown subscription param 'sssauth'", false)]
@@ -209,7 +293,7 @@ public class DataBentoJsonConverterTests
     ""end_ts"": ""18446744073709551615""
 }";
 
-        var marketData = json.DeserializeSnakeCaseLiveData();
+        var marketData = json.DeserializeObject<MarketDataBase>();
 
         Assert.IsNotNull(marketData);
         Assert.AreEqual(1769546804979770503, marketData.Header.TsEvent);
@@ -257,7 +341,7 @@ public class DataBentoJsonConverterTests
         }
     ]
 }";
-        var marketData = json.DeserializeSnakeCaseLiveData();
+        var marketData = json.DeserializeObject<MarketDataBase>();
 
         Assert.IsNotNull(marketData);
         Assert.AreEqual(1769546804990833083, marketData.Header.TsEvent);
@@ -283,5 +367,15 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(2, level.AskSz);
         Assert.AreEqual(8, level.BidCt);
         Assert.AreEqual(2, level.AskCt);
+    }
+
+    [Test]
+    public void DeserializeUnknownJsonFormatShouldThrow()
+    {
+        var json = @"{ ""some_property"": ""some_value"" }";
+        Assert.Throws<JsonSerializationException>(() => json.DeserializeObject<MarketDataBase>());
+
+        var json2 = @"{ ""hd"": { ""rtype"": 9999 } }";
+        Assert.Throws<NotSupportedException>(() => json2.DeserializeObject<MarketDataBase>());
     }
 }

@@ -20,6 +20,7 @@ using QuantConnect.Util;
 using QuantConnect.Configuration;
 using System.Collections.Generic;
 using QuantConnect.Lean.DataSource.DataBento.Api;
+using QuantConnect.Lean.DataSource.DataBento.Models.Events;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 
@@ -66,7 +67,7 @@ public class DataBentoLiveAPIClientTests
             { Securities.Futures.Indices.Russell2000EMini + "H6", 0 }
         };
 
-        void OnSymbolMappingConfirmation(object sender, Models.Live.SymbolMappingConfirmationEventArgs e)
+        void OnSymbolMappingConfirmation(object sender, SymbolMappingConfirmationEventArgs e)
         {
             if (subs.ContainsKey(e.Symbol))
             {

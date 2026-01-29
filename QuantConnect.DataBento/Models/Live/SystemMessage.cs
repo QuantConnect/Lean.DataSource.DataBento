@@ -16,7 +16,7 @@
 
 namespace QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
-public sealed class HeartbeatMessage : MarketDataRecord
+public sealed class SystemMessage : MarketDataBase
 {
-    public required string Msg { get; set; }
+    public string Msg { get; set; }
 }

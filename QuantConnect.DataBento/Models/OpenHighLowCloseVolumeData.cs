@@ -19,7 +19,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 /// Open-High-Low-Close-Volume (OHLCV) bar representing aggregated market data
 /// for a specific instrument and time interval.
 /// </summary>
-public sealed class OhlcvBar : MarketDataRecord
+public sealed class OpenHighLowCloseVolumeData : MarketDataBase
 {
     /// <summary>
     /// Opening price of the bar.

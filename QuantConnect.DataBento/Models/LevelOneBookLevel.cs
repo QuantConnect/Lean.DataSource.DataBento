@@ -20,12 +20,12 @@ public sealed class LevelOneBookLevel
     /// <summary>
     /// Bid price at this book level.
     /// </summary>
-    public decimal BidPx { get; set; }
+    public decimal? BidPx { get; set; }
 
     /// <summary>
     /// Ask price at this book level.
     /// </summary>
-    public decimal AskPx { get; set; }
+    public decimal? AskPx { get; set; }
 
     /// <summary>
     /// Total bid size at this level.

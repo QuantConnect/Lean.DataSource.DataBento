@@ -15,19 +15,30 @@
 
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using QuantConnect.Logging;
 using QuantConnect.Lean.DataSource.DataBento.Models;
-using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
+using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Converters;
 
-public class LiveDataConverter : JsonConverter<MarketDataRecord>
+public class DataConverter : JsonConverter<MarketDataBase>
 {
+    /// <summary>
+    /// JSON property name used to identify the message header section.
+    /// </summary>
     private const string headerIdentifier = "hd";
 
+    /// <summary>
+    /// JSON property name that specifies the market data record type.
+    /// </summary>
     private const string recordTypeIdentifier = "rtype";
 
-    private static JsonSerializer _snakeSerializer = new JsonSerializer
+    /// <summary>
+    /// Shared JSON serializer configured to use snake_case naming,
+    /// used for deserializing market data payloads.
+    /// </summary>
+    private readonly static JsonSerializer _snakeSerializer = new()
     {
         ContractResolver = Serialization.SnakeCaseContractResolver.Instance
     };
@@ -52,21 +63,46 @@ public class LiveDataConverter : JsonConverter<MarketDataRecord>
     /// <param name="existingValue">The existing property value of the JSON that is being converted.</param>
     /// <param name="serializer">The calling serializer.</param>
     /// <returns>The object value.</returns>
-    public override MarketDataRecord ReadJson(JsonReader reader, Type objectType, MarketDataRecord? existingValue, bool hasExistingValue, JsonSerializer serializer)
+    public override MarketDataBase ReadJson(JsonReader reader, Type objectType, MarketDataBase existingValue, bool hasExistingValue, JsonSerializer serializer)
     {
         var jObject = JObject.Load(reader);
 
-        var recordType = jObject[headerIdentifier]?[recordTypeIdentifier]?.ToObject<RecordType>();
+        var recordTypeToken = jObject[headerIdentifier]?[recordTypeIdentifier];
+        if (recordTypeToken == null)
+        {
+            var msg = $"Cannot read '{recordTypeIdentifier}' from JSON";
+            Log.Error($"{nameof(DataConverter)}.{nameof(ReadJson)}: {msg}. JSON: {jObject.ToString(Formatting.None)}.");
+            throw new JsonSerializationException(msg);
+        }
 
+        var recordType = recordTypeToken.ToObject<RecordType>();
+
+        var marketDataBase = default(MarketDataBase);
         switch (recordType)
         {
-            case RecordType.SymbolMapping:
-                return jObject.ToObject<SymbolMappingMessage>(_snakeSerializer);
+            case RecordType.OpenHighLowCloseVolume1Day:
+                marketDataBase = new OpenHighLowCloseVolumeData();
+                break;
             case RecordType.MarketByPriceDepth1:
-                return jObject.ToObject<LevelOneData>(_snakeSerializer);
+                marketDataBase = new LevelOneData();
+                break;
+            case RecordType.SymbolMapping:
+                marketDataBase = new SymbolMappingMessage();
+                break;
+            case RecordType.Statistics:
+                marketDataBase = new StatisticsData();
+                break;
+            case RecordType.System:
+                marketDataBase = new SystemMessage();
+                break;
             default:
-                return null;
+                var msg = $"Unsupported RecordType '{recordType}'";
+                Log.Error($"{nameof(DataConverter)}.{nameof(ReadJson)}: {msg}. JSON: {jObject.ToString(Formatting.None)}.");
+                throw new NotSupportedException(msg);
         }
+
+        _snakeSerializer.Populate(jObject.CreateReader(), marketDataBase);
+        return marketDataBase;
     }
 
     /// <summary>
@@ -75,7 +111,7 @@ public class LiveDataConverter : JsonConverter<MarketDataRecord>
     /// <param name="writer">The <see cref="JsonWriter"/> to write to.</param>
     /// <param name="value">The value.</param>
     /// <param name="serializer">The calling serializer.</param>
-    public override void WriteJson(JsonWriter writer, MarketDataRecord? value, JsonSerializer serializer)
+    public override void WriteJson(JsonWriter writer, MarketDataBase? value, JsonSerializer serializer)
     {
         throw new NotImplementedException();
     }

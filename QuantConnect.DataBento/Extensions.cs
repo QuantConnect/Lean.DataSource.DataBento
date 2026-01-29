@@ -14,8 +14,7 @@
 */
 
 using Newtonsoft.Json;
-using QuantConnect.Lean.DataSource.DataBento.Models;
-using QuantConnect.Lean.DataSource.DataBento.Serialization;
+using QuantConnect.Logging;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
 
@@ -28,22 +27,8 @@ public static class Extensions
     /// <typeparam name="T">The target type of the deserialized object.</typeparam>
     /// <param name="json">The JSON string to deserialize.</param>
     /// <returns>The deserialized object of type <typeparamref name="T"/>.</returns>
-    public static T? DeserializeKebabCase<T>(this string json)
+    public static T? DeserializeObject<T>(this string json)
     {
-        return JsonConvert.DeserializeObject<T>(json, JsonSettings.SnakeCase);
-    }
-
-    /// <summary>
-    /// Deserializes the specified JSON string to a <see cref="MarketDataRecord"/>
-    /// using snake-case property name resolution.
-    /// </summary>
-    /// <param name="json">The JSON string to deserialize.</param>
-    /// <returns>
-    /// The deserialized <see cref="MarketDataRecord"/> object,
-    /// or <c>null</c> if deserialization fails or the input is <c>null</c> or empty.
-    /// </returns>
-    public static MarketDataRecord? DeserializeSnakeCaseLiveData(this string json)
-    {
-        return JsonConvert.DeserializeObject<MarketDataRecord>(json, JsonSettings.LiveDataSnakeCase);
+        return JsonConvert.DeserializeObject<T>(json);
     }
 }

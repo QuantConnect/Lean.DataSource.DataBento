@@ -14,17 +14,19 @@
 */
 
 using Newtonsoft.Json;
+using QuantConnect.Lean.DataSource.DataBento.Converters;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Models;
 
 /// <summary>
 /// Base class for all market data records containing a standard metadata header.
 /// </summary>
-public abstract class MarketDataRecord 
+[JsonConverter(typeof(DataConverter))]
+public abstract class MarketDataBase
 {
     /// <summary>
     /// Gets or sets the standard metadata header for this market data record.
     /// </summary>
     [JsonProperty("hd")]
-    public required Header Header { get; set; }
+    public Header Header { get; set; }
 }

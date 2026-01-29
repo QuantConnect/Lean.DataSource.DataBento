@@ -31,7 +31,7 @@ using System.Collections.Concurrent;
 using QuantConnect.Brokerages.LevelOneOrderBook;
 using QuantConnect.Lean.DataSource.DataBento.Api;
 using QuantConnect.Lean.DataSource.DataBento.Models;
-using QuantConnect.Lean.DataSource.DataBento.Models.Live;
+using QuantConnect.Lean.DataSource.DataBento.Models.Events;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
 

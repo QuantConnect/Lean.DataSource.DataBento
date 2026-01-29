@@ -13,7 +13,7 @@
  * limitations under the License.
 */
 
-namespace QuantConnect.Lean.DataSource.DataBento.Models.Live;
+namespace QuantConnect.Lean.DataSource.DataBento.Models.Events;
 
 /// <summary>
 /// Provides data for the symbol-mapping confirmation event.

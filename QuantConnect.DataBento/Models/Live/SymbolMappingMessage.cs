@@ -16,7 +16,7 @@
 
 namespace QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
-public class SymbolMappingMessage : MarketDataRecord
+public class SymbolMappingMessage : MarketDataBase
 {
     /// <summary>
     /// The input symbol from the subscription

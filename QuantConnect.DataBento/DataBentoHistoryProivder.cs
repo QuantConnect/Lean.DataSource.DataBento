@@ -253,7 +253,12 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
             var time = quoteBar.Header.UtcTime.ConvertFromUtc(request.DataTimeZone);
             foreach (var level in quoteBar.Levels)
             {
-                yield return new Tick(time, request.Symbol, level.BidSz, level.BidPx, level.AskSz, level.AskPx);
+                if (level.BidPx == null && level.AskPx == null)
+                {
+                    continue;
+                }
+
+                yield return new Tick(time, request.Symbol, level.BidSz, level.BidPx ?? 0m, level.AskSz, level.AskPx ?? 0m);
             }
         }
     }

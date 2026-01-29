@@ -17,7 +17,7 @@ using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Models;
 
-public sealed class StatisticsData : MarketDataRecord
+public sealed class StatisticsData : MarketDataBase
 {
     /// <summary>
     /// Quantity or value associated with the statistic.

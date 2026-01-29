@@ -38,7 +38,7 @@ public class HistoricalAPIClient : IDisposable
             );
     }
 
-    public IEnumerable<OhlcvBar> GetHistoricalOhlcvBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
+    public IEnumerable<OpenHighLowCloseVolumeData> GetHistoricalOhlcvBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
     {
         string schema;
         switch (resolution)
@@ -59,7 +59,7 @@ public class HistoricalAPIClient : IDisposable
                 throw new ArgumentException($"Unsupported resolution {resolution} for OHLCV data.");
         }
 
-        return GetRange<OhlcvBar>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
+        return GetRange<OpenHighLowCloseVolumeData>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
     }
 
     public IEnumerable<LevelOneData> GetTickBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
@@ -78,7 +78,7 @@ public class HistoricalAPIClient : IDisposable
         }
     }
 
-    private IEnumerable<T> GetRange<T>(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string schema, string dataSet, bool useLimit = false) where T : MarketDataRecord
+    private IEnumerable<T> GetRange<T>(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string schema, string dataSet, bool useLimit = false) where T : MarketDataBase
     {
         var formData = new Dictionary<string, string>
         {
@@ -143,7 +143,7 @@ public class HistoricalAPIClient : IDisposable
             var data = default(T);
             while ((line = reader.ReadLine()) != null)
             {
-                data = line.DeserializeKebabCase<T>();
+                data = line.DeserializeObject<T>();
                 yield return data;
             }
             start = data.Header.UtcTime.AddTicks(1);

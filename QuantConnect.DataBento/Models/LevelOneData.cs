@@ -18,7 +18,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 /// <summary>
 /// Represents a level-one market data update containing best bid and ask information.
 /// </summary>
-public sealed class LevelOneData : MarketDataRecord
+public sealed class LevelOneData : MarketDataBase
 {
     /// <summary>
     /// The capture-server-received timestamp expressed as the number of nanoseconds since the UNIX epoch.

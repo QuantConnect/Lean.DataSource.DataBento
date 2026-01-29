@@ -51,7 +51,6 @@ public class DataBentoHistoricalApiClientTests
     [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Hour)]
     [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Minute)]
     [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Second)]
-    //[TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Tick)]
     [TestCase("ESH6 C6875", "2026/01/11", "2026/01/20", Resolution.Daily)]
     public void CanInitializeHistoricalApiClient(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
     {
@@ -99,6 +98,24 @@ public class DataBentoHistoricalApiClientTests
         }
 
         Log.Trace($"{nameof(CanInitializeHistoricalApiClient)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
+        Assert.Greater(dataCounter, 0);
+    }
+
+    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Tick)]
+    public void ShouldFetchTicks(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
+    {
+        var dataCounter = 0;
+        var previousEndTime = DateTime.MinValue;
+        foreach (var data in _client.GetTickBars(ticker, startDate, endDate, Dataset))
+        {
+            Assert.IsNotNull(data);
+            Assert.Greater(data.Price, 0m);
+            Assert.Greater(data.Size, 0);
+            Assert.AreNotEqual(default(DateTime), data.Header.UtcTime);
+            previousEndTime = data.Header.UtcTime;
+            dataCounter++;
+        }
+        Log.Trace($"{nameof(ShouldFetchTicks)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (ticks)");
         Assert.Greater(dataCounter, 0);
     }
 }

@@ -18,6 +18,7 @@ using QuantConnect.Util;
 using QuantConnect.Logging;
 using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
+using QuantConnect.Lean.DataSource.DataBento.Models.Events;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Api;
 
@@ -94,7 +95,7 @@ public sealed class LiveAPIClient : IDisposable
 
     private void MessageReceived(string message)
     {
-        var data = message.DeserializeSnakeCaseLiveData();
+        var data = message.DeserializeObject<MarketDataBase>();
 
         if (data == null)
         {
