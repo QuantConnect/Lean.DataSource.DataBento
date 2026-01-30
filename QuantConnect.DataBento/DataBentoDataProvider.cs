@@ -42,11 +42,6 @@ namespace QuantConnect.Lean.DataSource.DataBento;
 /// </summary>
 public partial class DataBentoProvider : IDataQueueHandler
 {
-    /// <summary>
-    /// Resolves map files to correctly handle current and historical ticker symbols.
-    /// </summary>
-    private readonly IMapFileProvider _mapFileProvider = Composer.Instance.GetPart<IMapFileProvider>();
-
     private HistoricalAPIClient _historicalApiClient;
 
     private readonly DataBentoSymbolMapper _symbolMapper = new();
