@@ -15,6 +15,7 @@
 
 using Newtonsoft.Json;
 using QuantConnect.Logging;
+using QuantConnect.Lean.DataSource.DataBento.Serialization;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
 
@@ -29,6 +30,14 @@ public static class Extensions
     /// <returns>The deserialized object of type <typeparamref name="T"/>.</returns>
     public static T? DeserializeObject<T>(this string json)
     {
-        return JsonConvert.DeserializeObject<T>(json);
+        try
+        {
+            return JsonConvert.DeserializeObject<T>(json, JsonSettings.SnakeCase);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, $"Failed to deserialize JSON into {typeof(T).Name}. JSON: {json}");
+            throw;
+        }
     }
 }

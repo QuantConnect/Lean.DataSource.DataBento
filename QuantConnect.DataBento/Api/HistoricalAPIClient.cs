@@ -83,7 +83,6 @@ public class HistoricalAPIClient : IDisposable
         var formData = new Dictionary<string, string>
         {
             { "dataset", dataSet },
-            { "end", Time.DateTimeToUnixTimeStampNanoseconds(endDateTimeUtc).ToStringInvariant() },
             { "symbols", symbol },
             { "schema", schema },
             { "encoding", "json" },
@@ -97,10 +96,12 @@ public class HistoricalAPIClient : IDisposable
         }
 
         var start = startDateTimeUtc;
+        var end = endDateTimeUtc;
         var httpStatusCode = default(HttpStatusCode);
         do
         {
             formData["start"] = Time.DateTimeToUnixTimeStampNanoseconds(start).ToStringInvariant();
+            formData["end"] = Time.DateTimeToUnixTimeStampNanoseconds(end).ToStringInvariant();
 
             using var content = new FormUrlEncodedContent(formData);
 
@@ -111,19 +112,13 @@ public class HistoricalAPIClient : IDisposable
 
             using var response = _httpClient.Send(requestMessage);
 
-            if (response.Headers.TryGetValues("x-warning", out var warnings))
-            {
-                foreach (var warning in warnings)
-                {
-                    Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {warning}");
-                }
-            }
+            LogWarnings(response);
 
             using var stream = response.Content.ReadAsStream();
 
             if (stream.Length == 0)
             {
-                continue;
+                yield break;
             }
 
             using var reader = new StreamReader(stream);
@@ -132,26 +127,79 @@ public class HistoricalAPIClient : IDisposable
             if (response.StatusCode == HttpStatusCode.UnprocessableContent)
             {
                 line = reader.ReadLine();
-                Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}.Response: {line}. " +
-                    $"Request: [{response.RequestMessage?.Method}]({response.RequestMessage?.RequestUri}), " +
-                    $"Payload: {string.Join(", ", formData.Select(kvp => $"{kvp.Key}: {kvp.Value}"))}");
-                yield break;
+                if (line == null)
+                {
+                    yield break;
+                }
+
+                var error = line.DeserializeObject<ErrorResponse>();
+
+                switch (error?.Detail?.Case)
+                {
+                    case ErrorCases.DataStartBeforeAvailableStart:
+                        start = error.Detail.Payload.AvailableStart.UtcDateTime;
+                        if (end > error.Detail.Payload.AvailableEnd.UtcDateTime)
+                        {
+                            end = error.Detail.Payload.AvailableEnd.UtcDateTime;
+
+                        }
+                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {ErrorCases.DataStartBeforeAvailableStart}, " +
+                            $"Start {startDateTimeUtc:O}->{start:O}, End {endDateTimeUtc:O}->{end:O}");
+                        continue;
+                    case ErrorCases.DataEndAfterAvailableEnd:
+                        end = error.Detail.Payload.AvailableEnd.UtcDateTime;
+                        var startBound = end - endDateTimeUtc.Subtract(startDateTimeUtc);
+                        start = startBound < error.Detail.Payload.AvailableStart.UtcDateTime
+                            ? error.Detail.Payload.AvailableStart.UtcDateTime
+                            : startBound;
+                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {ErrorCases.DataEndAfterAvailableEnd}, " +
+                            $"Start {startDateTimeUtc:O}->{start:O}, End {endDateTimeUtc:O}->{end:O}");
+                        continue;
+                    case ErrorCases.DataTimeRangeStartOnOrAfterEnd:
+                        Log.Error($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {error.Detail.Message}");
+                        yield break;
+                    default:
+                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}.Response: {line}. " +
+                            $"Request: [{response.RequestMessage?.Method}]({response.RequestMessage?.RequestUri}), " +
+                            $"Payload: {string.Join(", ", formData.Select(kvp => $"{kvp.Key}: {kvp.Value}"))}");
+                        yield break;
+                }
             }
 
             httpStatusCode = response.EnsureSuccessStatusCode().StatusCode;
 
-            var data = default(T);
+            var lastEmitted = default(T);
             while ((line = reader.ReadLine()) != null)
             {
-                data = line.DeserializeObject<T>();
-                yield return data;
+                lastEmitted = line.DeserializeObject<T>();
+
+                if (lastEmitted == null)
+                {
+                    continue;
+                }
+
+                yield return lastEmitted;
             }
-            start = data.Header.UtcTime.AddTicks(1);
-        } while (httpStatusCode == HttpStatusCode.PartialContent);
+            // Advance start by one tick to move the time window forward without duplication.
+            // The API range is inclusive, so this ensures the next request starts
+            // strictly after the last emitted record and avoids re-fetching it.
+            start = lastEmitted!.Header.UtcTime.AddTicks(1);
+        } while (httpStatusCode != HttpStatusCode.OK);
     }
 
     public void Dispose()
     {
         _httpClient?.DisposeSafely();
+    }
+
+    private static void LogWarnings(HttpResponseMessage response)
+    {
+        if (response.Headers.TryGetValues("x-warning", out var warnings))
+        {
+            foreach (var warning in warnings)
+            {
+                Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(LogWarnings)}: {warning}");
+            }
+        }
     }
 }

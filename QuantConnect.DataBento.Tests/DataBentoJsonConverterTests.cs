@@ -14,6 +14,7 @@
 */
 
 using System;
+using System.Linq;
 using Newtonsoft.Json;
 using NUnit.Framework;
 using System.Collections.Generic;
@@ -377,5 +378,85 @@ public class DataBentoJsonConverterTests
 
         var json2 = @"{ ""hd"": { ""rtype"": 9999 } }";
         Assert.Throws<NotSupportedException>(() => json2.DeserializeObject<MarketDataBase>());
+    }
+
+    private static IEnumerable<TestCaseData> ErrorResponses
+    {
+        get
+        {
+            yield return new TestCaseData(@"{
+    ""detail"": {
+        ""case"": ""data_end_after_available_end"",
+        ""message"": ""The dataset GLBX.MDP3 has data available up to '2026-01-29 20:00:00+00:00'. The `end` in the query ('2026-01-29 20:23:08.167605900+00:00') is after the available range. Try requesting with an earlier `end`."",
+        ""status_code"": 422,
+        ""docs"": ""https://databento.com/docs/api-reference-historical/basics/datasets"",
+        ""payload"": {
+            ""dataset"": ""GLBX.MDP3"",
+            ""start"": ""2026-01-28T18:00:00.000000000Z"",
+            ""end"": ""2026-01-29T20:23:08.167605900Z"",
+            ""available_start"": ""2010-06-06T00:00:00.000000000Z"",
+            ""available_end"": ""2026-01-29T20:00:00.000000000Z""
+        }
+    }
+}").SetArgDisplayNames("DataEndAfterAvailableEnd");
+
+            yield return new TestCaseData(@"{
+    ""detail"": {
+        ""case"": ""data_start_before_available_start"",
+        ""message"": ""`start` in query ('2010-01-11 00:00:00+00:00') was before the available start of dataset GLBX.MDP3 ('2010-06-06 00:00:00+00:00'). Try requesting with a later `start`."",
+        ""status_code"": 422,
+        ""docs"": ""https://databento.com/docs/api-reference-historical/basics/datasets"",
+        ""payload"": {
+            ""dataset"": ""GLBX.MDP3"",
+            ""start"": ""2010-01-11T00:00:00.000000000Z"",
+            ""end"": ""2026-01-30T00:00:00.000000000Z"",
+            ""available_start"": ""2010-06-06T00:00:00.000000000Z"",
+            ""available_end"": ""2026-01-29T00:00:00.000000000Z""
+        }
+    }
+}").SetArgDisplayNames("DataStartBeforeAvailableStart");
+
+            yield return new TestCaseData(@"{
+    ""detail"": {
+        ""case"": ""data_time_range_start_on_or_after_end"",
+        ""message"": ""Invalid time range query, `start` 2026-01-30 00:10:00+00:00 cannot be on or after `end` 2026-01-30 00:05:00+00:00."",
+        ""status_code"": 422,
+        ""docs"": ""https://databento.com/docs/standards-and-conventions/common-fields-enums-types"",
+        ""payload"": {
+            ""start"": ""2026-01-30T00:10:00.000000000Z"",
+            ""end"": ""2026-01-30T00:05:00.000000000Z""
+        }
+    }
+}").SetArgDisplayNames("DataTimeRangeStartOnOrAfterEnd");
+        }
+    }
+
+    [TestCaseSource(nameof(ErrorResponses))]
+    public void DeserializeErrorResponse(string json)
+    {
+        var error = json.DeserializeObject<ErrorResponse>();
+
+        Assert.IsNotNull(error);
+        Assert.IsNotNull(error.Detail);
+        Assert.That(error.Detail.Case, Is.Not.Null.And.Not.Empty);
+        var validCases = new[]
+        {
+            "data_end_after_available_end",
+            "data_start_before_available_start"
+        };
+        Assert.IsTrue(validCases.Any(x => x.Equals(error.Detail.Case, StringComparison.InvariantCultureIgnoreCase)));
+
+        Assert.That(error.Detail.Message, Is.Not.Null.And.Not.Empty);
+        Assert.Greater(error.Detail.StatusCode, 0);
+        Assert.That(error.Detail.Docs, Is.Not.Null.And.Not.Empty);
+
+        Assert.IsNotNull(error.Detail.Payload);
+        Assert.AreEqual(422, error.Detail.StatusCode);
+        Assert.AreEqual("GLBX.MDP3", error.Detail.Payload.Dataset);
+
+        Assert.AreNotEqual(default(DateTime), error.Detail.Payload.Start);
+        Assert.AreNotEqual(default(DateTime), error.Detail.Payload.End);
+        Assert.AreNotEqual(default(DateTime), error.Detail.Payload.AvailableStart);
+        Assert.AreNotEqual(default(DateTime), error.Detail.Payload.AvailableEnd);
     }
 }

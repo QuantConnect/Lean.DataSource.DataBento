@@ -81,6 +81,9 @@ public class DataConverter : JsonConverter<MarketDataBase>
         switch (recordType)
         {
             case RecordType.OpenHighLowCloseVolume1Day:
+            case RecordType.OpenHighLowCloseVolume1Hour:
+            case RecordType.OpenHighLowCloseVolume1Minute:
+            case RecordType.OpenHighLowCloseVolume1Second:
                 marketDataBase = new OpenHighLowCloseVolumeData();
                 break;
             case RecordType.MarketByPriceDepth1:

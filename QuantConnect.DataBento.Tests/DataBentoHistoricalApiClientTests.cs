@@ -14,8 +14,10 @@
 */
 
 using System;
+using System.Linq;
 using NUnit.Framework;
 using QuantConnect.Logging;
+using System.Collections.Generic;
 using QuantConnect.Configuration;
 using QuantConnect.Lean.DataSource.DataBento.Api;
 
@@ -47,16 +49,43 @@ public class DataBentoHistoricalApiClientTests
         _client = new HistoricalAPIClient(apiKey);
     }
 
-    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Daily)]
-    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Hour)]
-    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Minute)]
-    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Second)]
-    [TestCase("ESH6 C6875", "2026/01/11", "2026/01/20", Resolution.Daily)]
-    public void CanInitializeHistoricalApiClient(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
+    private static IEnumerable<TestCaseData> GetTestCases
+    {
+        get
+        {
+            var todayDate = DateTime.UtcNow.Date;
+            var tomorrowDate = todayDate.AddDays(1);
+
+            var ESH6 = Securities.Futures.Indices.SP500EMini + "H6"; // March 2026 future contract symbol
+
+            yield return new TestCaseData(ESH6, new DateTime(2010, 01, 11), tomorrowDate, Resolution.Daily, true)
+                .SetArgDisplayNames("Invalid: Data Start/End Before/After Available Start/End");
+            yield return new TestCaseData(ESH6, new DateTime(2010, 01, 01), new DateTime(2015, 01, 01), Resolution.Daily, false)
+                .SetArgDisplayNames("Invalid: Data Start Before Available Start");
+            yield return new TestCaseData(ESH6, new DateTime(2010, 06, 06), tomorrowDate, Resolution.Daily, true)
+                .SetArgDisplayNames("Invalid: Data End After Available End");
+            yield return new TestCaseData(ESH6, new DateTime(2020, 01, 11), new DateTime(2026, 01, 20), Resolution.Hour, true)
+                .SetArgDisplayNames("Valid: Hourly Data Within Available Range (2020/01/11 - 2026/01/20)");
+            yield return new TestCaseData(ESH6, new DateTime(2026, 01, 11), new DateTime(2026, 01, 20), Resolution.Minute, true)
+                .SetArgDisplayNames("Valid: Minute Data Within Available Range");
+            yield return new TestCaseData(ESH6, new DateTime(2025, 01, 11), new DateTime(2026, 01, 20), Resolution.Second, true)
+                .SetArgDisplayNames("Valid: Second Data Within Available Range");
+            yield return new TestCaseData(ESH6, new DateTime(2026, 01, 24, 2, 10, 0), new DateTime(2026, 01, 24, 2, 12, 00), Resolution.Minute, false)
+                .SetArgDisplayNames("Invalid: Minute Data at Saturday");
+
+            var ESH6_C6875 = Securities.Futures.Indices.SP500EMini + "H6 C6875"; // March 2026 future contract call option symbol
+            yield return new TestCaseData(ESH6_C6875, new DateTime(2010, 01, 11), new DateTime(2026, 01, 20), Resolution.Daily, true)
+                .SetArgDisplayNames("Invalid: Data Start/End Before/After Available Start/End");
+        }
+    }
+
+    [TestCaseSource(nameof(GetTestCases))]
+    public void GetHistoricalOHLCVBars(string ticker, DateTime startDate, DateTime endDate, Resolution resolution, bool isDataReceived)
     {
         var dataCounter = 0;
         var previousEndTime = DateTime.MinValue;
-        foreach (var data in _client.GetHistoricalOhlcvBars(ticker, startDate, endDate, resolution, Dataset))
+        var bars = _client.GetHistoricalOhlcvBars(ticker, startDate, endDate, resolution, Dataset).ToList();
+        foreach (var data in bars)
         {
             Assert.IsNotNull(data);
 
@@ -74,8 +103,15 @@ public class DataBentoHistoricalApiClientTests
             dataCounter++;
         }
 
-        Log.Trace($"{nameof(CanInitializeHistoricalApiClient)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
-        Assert.Greater(dataCounter, 0);
+        Log.Trace($"{nameof(GetHistoricalOHLCVBars)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
+        if (isDataReceived)
+        {
+            Assert.Greater(dataCounter, 0);
+        }
+        else
+        {
+            Assert.AreEqual(0, dataCounter);
+        }
     }
 
     [TestCase("ESH6 C6875", "2026/01/11", "2026/01/20", Resolution.Daily)]
@@ -97,7 +133,7 @@ public class DataBentoHistoricalApiClientTests
             dataCounter++;
         }
 
-        Log.Trace($"{nameof(CanInitializeHistoricalApiClient)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
+        Log.Trace($"{nameof(GetHistoricalOHLCVBars)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
         Assert.Greater(dataCounter, 0);
     }
 
