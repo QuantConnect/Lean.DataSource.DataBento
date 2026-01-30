@@ -72,6 +72,10 @@ public class DataBentoHistoricalApiClientTests
                 .SetArgDisplayNames("Valid: Second Data Within Available Range");
             yield return new TestCaseData(ESH6, new DateTime(2026, 01, 24, 2, 10, 0), new DateTime(2026, 01, 24, 2, 12, 00), Resolution.Minute, false)
                 .SetArgDisplayNames("Invalid: Minute Data at Saturday");
+            yield return new TestCaseData(ESH6, new DateTime(2015, 01, 01), new DateTime(2026, 01, 29), Resolution.Minute, true)
+                .SetArgDisplayNames("Valid: Minute Data within 11 years range");
+            yield return new TestCaseData(ESH6, new DateTime(2015, 01, 01), new DateTime(2026, 01, 29), Resolution.Second, true)
+                .SetArgDisplayNames("Valid: Second Data within 11 years range");
 
             var ESH6_C6875 = Securities.Futures.Indices.SP500EMini + "H6 C6875"; // March 2026 future contract call option symbol
             yield return new TestCaseData(ESH6_C6875, new DateTime(2010, 01, 11), new DateTime(2026, 01, 20), Resolution.Daily, true)

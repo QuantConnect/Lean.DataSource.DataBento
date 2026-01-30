@@ -24,6 +24,42 @@ namespace QuantConnect.Lean.DataSource.DataBento.Api;
 
 public class HistoricalAPIClient : IDisposable
 {
+    /// <summary>
+    /// OHLCV bars aggregated to 1-second intervals.
+    /// </summary>
+    /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/ohlcv"/></remarks>
+    private const string OHLCV1sSchema = "ohlcv-1s";
+
+    /// <summary>
+    /// OHLCV bars aggregated to 1-minute intervals.
+    /// </summary>
+    /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/ohlcv"/></remarks>
+    private const string OHLCV1mSchema = "ohlcv-1m";
+
+    /// <summary>
+    /// OHLCV bars aggregated to 1-hour intervals.
+    /// </summary>
+    /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/ohlcv"/></remarks>
+    private const string OHLCV1hSchema = "ohlcv-1h";
+
+    /// <summary>
+    /// OHLCV bars aggregated to 1-day intervals.
+    /// </summary>
+    /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/ohlcv"/></remarks>
+    private const string OHLCV1dSchema = "ohlcv-1d";
+
+    /// <summary>
+    /// Market-by-price data with top-of-book depth (MBP-1).
+    /// </summary>
+    /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/mbp-1"/></remarks>
+    private const string MBP1Schema = "mbp-1";
+
+    /// <summary>
+    /// Market statistics data (e.g. volume, trades, session statistics).
+    /// </summary>
+    /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/statistics"/></remarks>
+    private const string StatisticsSchema = "statistics";
+
     private readonly HttpClient _httpClient = new()
     {
         BaseAddress = new Uri("https://hist.databento.com")
@@ -44,16 +80,16 @@ public class HistoricalAPIClient : IDisposable
         switch (resolution)
         {
             case Resolution.Second:
-                schema = "ohlcv-1s";
+                schema = OHLCV1sSchema;
                 break;
             case Resolution.Minute:
-                schema = "ohlcv-1m";
+                schema = OHLCV1mSchema;
                 break;
             case Resolution.Hour:
-                schema = "ohlcv-1h";
+                schema = OHLCV1hSchema;
                 break;
             case Resolution.Daily:
-                schema = "ohlcv-1d";
+                schema = OHLCV1dSchema;
                 break;
             default:
                 throw new ArgumentException($"Unsupported resolution {resolution} for OHLCV data.");
@@ -64,12 +100,12 @@ public class HistoricalAPIClient : IDisposable
 
     public IEnumerable<LevelOneData> GetTickBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
     {
-        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, "mbp-1", dataSet, useLimit: true);
+        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, MBP1Schema, dataSet);
     }
 
     public IEnumerable<StatisticsData> GetOpenInterest(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
     {
-        foreach (var statistics in GetRange<StatisticsData>(symbol, startDateTimeUtc, endDateTimeUtc, "statistics", dataSet))
+        foreach (var statistics in GetRange<StatisticsData>(symbol, startDateTimeUtc, endDateTimeUtc, StatisticsSchema, dataSet))
         {
             if (statistics.StatType == Models.Enums.StatisticType.OpenInterest)
             {
@@ -78,7 +114,7 @@ public class HistoricalAPIClient : IDisposable
         }
     }
 
-    private IEnumerable<T> GetRange<T>(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string schema, string dataSet, bool useLimit = false) where T : MarketDataBase
+    private IEnumerable<T> GetRange<T>(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string schema, string dataSet) where T : MarketDataBase
     {
         var formData = new Dictionary<string, string>
         {
@@ -90,9 +126,16 @@ public class HistoricalAPIClient : IDisposable
             { "pretty_px", "true" },
         };
 
-        if (useLimit)
+        // Prevent HTTP client timeouts for large historical range requests.
+        // Explicitly cap the number of returned records per request based on the schema
+        switch (schema)
         {
-            formData["limit"] = "10000";
+            case MBP1Schema:
+                formData["limit"] = "10000";
+                break;
+            case OHLCV1sSchema:
+                formData["limit"] = "432000"; // 5 days 
+                break;
         }
 
         var start = startDateTimeUtc;
