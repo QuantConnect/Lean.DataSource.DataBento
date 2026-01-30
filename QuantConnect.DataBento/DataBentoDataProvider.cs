@@ -158,28 +158,13 @@ public partial class DataBentoProvider : IDataQueueHandler
     }
 
     /// <summary>
-    /// Attempts to resolve the DataBento dataset for the specified symbol based on its Lean market.
-    /// </summary>
-    /// <param name="symbol">The symbol whose market is used to determine the DataBento dataset.</param>
-    /// <param name="dataSet">
-    /// When this method returns <c>true</c>, contains the resolved DataBento dataset; otherwise, <c>null</c>.
-    /// </param>
-    /// <returns>
-    /// <c>true</c> if a DataBento dataset mapping exists for the symbol's market; otherwise, <c>false</c>.
-    /// </returns>
-    private bool TryGetDataBentoDataSet(Symbol symbol, out string? dataSet)
-    {
-        return _symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(symbol.ID.Market, out dataSet);
-    }
-
-    /// <summary>
     /// Logic to subscribe to the specified symbols
     /// </summary>
     public bool Subscribe(IEnumerable<Symbol> symbols)
     {
         foreach (var symbol in symbols)
         {
-            if (!TryGetDataBentoDataSet(symbol, out var dataSet))
+            if (!_symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(symbol.ID.Market, out var dataSetSpecifications))
             {
                 throw new ArgumentException($"No DataBento dataset mapping found for symbol {symbol} in market {symbol.ID.Market}. Cannot subscribe.");
             }
@@ -188,7 +173,7 @@ public partial class DataBentoProvider : IDataQueueHandler
 
             _pendingSubscriptions[brokerageSymbol] = symbol;
 
-            _liveApiClient.Subscribe(dataSet, brokerageSymbol);
+            _liveApiClient.Subscribe(dataSetSpecifications.DataSetID, brokerageSymbol);
         }
 
         return true;

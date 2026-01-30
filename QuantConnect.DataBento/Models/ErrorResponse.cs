@@ -104,6 +104,11 @@ public static class ErrorCases
     public const string DataStartBeforeAvailableStart = "data_start_before_available_start";
 
     /// <summary>
+    /// The requested start timestamp is after the dataset's available end.
+    /// </summary>
+    public const string DataStartAfterAvailableEnd = "data_start_after_available_end";
+
+    /// <summary>
     /// The requested start timestamp is greater than or equal to the requested end timestamp.
     /// </summary>
     public const string DataTimeRangeStartOnOrAfterEnd = "data_time_range_start_on_or_after_end";

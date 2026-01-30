@@ -118,7 +118,7 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
             return null;
         }
 
-        if (!TryGetDataBentoDataSet(historyRequest.Symbol, out var dataSet) || dataSet == null)
+        if (!_symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(historyRequest.Symbol.ID.Market, out var dataSetSpecifications) || dataSetSpecifications == null)
         {
             if (!_dataBentoDatasetErrorFired)
             {
@@ -129,6 +129,12 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
             }
             return null;
         }
+
+        if (dataSetSpecifications.TryGetDelayWarningMessage(out var message))
+        {
+            Log.Trace(message);
+        }
+        var dataSet = dataSetSpecifications.DataSetID;
 
         var history = default(IEnumerable<BaseData>);
         var brokerageSymbol = _symbolMapper.GetBrokerageSymbol(historyRequest.Symbol);
@@ -155,23 +161,7 @@ public partial class DataBentoProvider : SynchronizingHistoryProvider
             return null;
         }
 
-        return FilterHistory(history, historyRequest, historyRequest.StartTimeLocal, historyRequest.EndTimeLocal);
-    }
-
-    private static IEnumerable<BaseData> FilterHistory(IEnumerable<BaseData> history, HistoryRequest request, DateTime startTimeLocal, DateTime endTimeLocal)
-    {
-        // cleaning the data before returning it back to user
-        foreach (var bar in history)
-        {
-            if (bar.Time >= startTimeLocal && bar.EndTime <= endTimeLocal)
-            {
-                if (request.ExchangeHours.IsOpen(bar.Time, bar.EndTime, request.IncludeExtendedMarketHours))
-                {
-                    Interlocked.Increment(ref _dataPointCount);
-                    yield return bar;
-                }
-            }
-        }
+        return history;
     }
 
     private IEnumerable<BaseData> GetOpenInterestBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)

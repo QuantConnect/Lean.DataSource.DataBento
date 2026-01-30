@@ -15,6 +15,7 @@
 
 using QuantConnect.Brokerages;
 using System.Collections.Frozen;
+using QuantConnect.Lean.DataSource.DataBento.Models;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
 
@@ -27,17 +28,17 @@ public class DataBentoSymbolMapper : ISymbolMapper
     /// Dataset for CME Globex futures
     /// https://databento.com/docs/venues-and-datasets has more information on datasets through DataBento
     /// </summary>
-    public FrozenDictionary<string, string> DataBentoDataSetByLeanMarket = new Dictionary<string, string>
+    public FrozenDictionary<string, DataSetSpecifications> DataBentoDataSetByLeanMarket = new Dictionary<string, DataSetSpecifications>
     {
-        { Market.EUREX, "XEUR.EOBI" },
+        { Market.EUREX, PredefinedDataSets.XEUR_EOBI },
 
-        { Market.CBOT, "GLBX.MDP3" },
-        { Market.CME,  "GLBX.MDP3" },
-        { Market.COMEX, "GLBX.MDP3" },
-        { Market.NYMEX, "GLBX.MDP3" },
+        { Market.CBOT, PredefinedDataSets.GLBX_MDP3 },
+        { Market.CME, PredefinedDataSets.GLBX_MDP3 },
+        { Market.COMEX, PredefinedDataSets.GLBX_MDP3 },
+        { Market.NYMEX, PredefinedDataSets.GLBX_MDP3 },
 
-        { Market.ICE, "IFUS.IMPACT" },
-        { Market.NYSELIFFE, "IFUS.IMPACT" }
+        { Market.ICE, PredefinedDataSets.IFUS_IMPACT },
+        { Market.NYSELIFFE, PredefinedDataSets.IFUS_IMPACT }
     }.ToFrozenDictionary();
 
     /// <summary>

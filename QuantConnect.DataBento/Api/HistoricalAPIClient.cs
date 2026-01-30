@@ -158,6 +158,12 @@ public class HistoricalAPIClient : IDisposable
                     case ErrorCases.DataTimeRangeStartOnOrAfterEnd:
                         Log.Error($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {error.Detail.Message}");
                         yield break;
+                    case ErrorCases.DataStartAfterAvailableEnd:
+                        end = error.Detail.Payload.AvailableEnd.UtcDateTime;
+                        start = end - endDateTimeUtc.Subtract(startDateTimeUtc);
+                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {ErrorCases.DataStartAfterAvailableEnd}, " +
+                            $"Start {startDateTimeUtc:O}->{start:O}, End {endDateTimeUtc:O}->{end:O}");
+                        continue;
                     default:
                         Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}.Response: {line}. " +
                             $"Request: [{response.RequestMessage?.Method}]({response.RequestMessage?.RequestUri}), " +

@@ -428,6 +428,22 @@ public class DataBentoJsonConverterTests
         }
     }
 }").SetArgDisplayNames("DataTimeRangeStartOnOrAfterEnd");
+
+            yield return new TestCaseData(@"{
+    ""detail"": {
+        ""case"": ""data_start_after_available_end"",
+        ""message"": ""`start` in query ('2026-01-30 13:16:22+00:00') was after the available end of dataset GLBX.MDP3 ('2026-01-30 13:00:00+00:00'). Try requesting with an earlier `start`."",
+        ""status_code"": 422,
+        ""docs"": ""https://databento.com/docs/api-reference-historical/basics/datasets"",
+        ""payload"": {
+            ""dataset"": ""GLBX.MDP3"",
+            ""start"": ""2026-01-30T13:16:22.000000000Z"",
+            ""end"": ""2026-01-30T13:16:32.149178800Z"",
+            ""available_start"": ""2010-06-06T00:00:00.000000000Z"",
+            ""available_end"": ""2026-01-30T13:00:00.000000000Z""
+        }
+    }
+}").SetArgDisplayNames("DataStartAfterAvailableEnd");
         }
     }
 
