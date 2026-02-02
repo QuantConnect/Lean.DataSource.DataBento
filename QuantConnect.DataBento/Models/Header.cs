@@ -26,7 +26,7 @@ public sealed class Header
     /// <summary>
     /// The matching-engine-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
     /// </summary>
-    public long TsEvent { get; set; }
+    public ulong TsEvent { get; set; }
 
     /// <summary>
     /// Record type identifier defining the data schema (e.g. trade, quote, bar).
@@ -46,5 +46,5 @@ public sealed class Header
     /// <summary>
     /// Event time converted to UTC <see cref="DateTime"/>.
     /// </summary>
-    public DateTime UtcTime => Time.UnixNanosecondTimeStampToDateTime(TsEvent);
+    public DateTime UtcTime => Time.UnixNanosecondTimeStampToDateTime(TsEvent == ulong.MaxValue ? 0L : (long)TsEvent);
 }

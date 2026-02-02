@@ -1,4 +1,4 @@
-/*
+﻿/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
@@ -54,6 +54,18 @@ public class HistoricalAPIClient : IDisposable
     /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/mbp-1"/></remarks>
     private const string MBP1Schema = "mbp-1";
 
+    /// <summary>
+    /// BBO on interval (BBO) provides the last best bid, best offer, and sale at 1-second. This is a subset of MBP-1.
+    /// </summary>
+    /// <remarks>https://databento.com/docs/schemas-and-data-formats/bbo</remarks>
+    private const string BBO1sSchema = "bbo-1s";
+
+    /// <summary>
+    /// BBO on interval (BBO) provides the last best bid, best offer, and sale at 1-minute intervals. This is a subset of MBP-1.
+    /// </summary>
+    /// <remarks>https://databento.com/docs/schemas-and-data-formats/bbo</remarks>
+    private const string BBO1mSchema = "bbo-1m";
+
     private bool _dataStartBeforeAvailableStartErrorFired;
     private bool _dataEndAfterAvailableEndErrorFired;
     private bool _dataTimeRangeStartOnOrAfterEndErrorFired;
@@ -97,15 +109,30 @@ public class HistoricalAPIClient : IDisposable
                 schema = OHLCV1dSchema;
                 break;
             default:
-                throw new ArgumentException($"Unsupported resolution {resolution} for OHLCV data.");
+                throw new ArgumentException($"Unsupported resolution {resolution} in GetHistoricalOhlcvBars.");
         }
 
         return GetRange<OpenHighLowCloseVolumeData>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
     }
 
-    public IEnumerable<LevelOneData> GetTickBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
+    public IEnumerable<LevelOneData> GetLevelOneData(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
     {
-        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, MBP1Schema, dataSet);
+        var schema = default(string);
+        switch (resolution)
+        {
+            case Resolution.Tick:
+                schema = MBP1Schema;
+                break;
+            case Resolution.Second:
+                schema = BBO1sSchema;
+                break;
+            case Resolution.Minute:
+                schema = BBO1mSchema;
+                break;
+            default:
+                throw new ArgumentException($"Unsupported resolution {resolution} in GetLevelOneData.");
+        }
+        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
     }
 
     public IEnumerable<StatisticsData> GetOpenInterest(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)

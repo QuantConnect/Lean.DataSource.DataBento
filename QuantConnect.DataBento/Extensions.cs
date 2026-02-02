@@ -15,6 +15,8 @@
 
 using Newtonsoft.Json;
 using QuantConnect.Logging;
+using System.Runtime.CompilerServices;
+using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Serialization;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
@@ -39,5 +41,14 @@ public static class Extensions
             Log.Error(ex, $"Failed to deserialize JSON into {typeof(T).Name}. JSON: {json}");
             throw;
         }
+    }
+
+    /// <summary>
+    /// Returns true when the level has at least one price: bid or ask.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool HasBidOrAskPrice(this LevelOneBookLevel level)
+    {
+        return level.BidPx.HasValue || level.AskPx.HasValue;
     }
 }

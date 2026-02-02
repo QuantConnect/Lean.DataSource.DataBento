@@ -144,6 +144,54 @@ public class DataBentoJsonConverterTests
         }
     ]
 }").SetArgDisplayNames("BidAndAskPriceNull");
+            yield return new TestCaseData(@"{
+    ""ts_recv"": ""1768137120000000000"",
+    ""hd"": {
+        ""ts_event"": ""18446744073709551615"",
+        ""rtype"": 196,
+        ""publisher_id"": 1,
+        ""instrument_id"": 42140878
+    },
+    ""side"": ""N"",
+    ""price"": null,
+    ""size"": 0,
+    ""flags"": 128,
+    ""sequence"": 811,
+    ""levels"": [
+        {
+            ""bid_px"": ""7004.000000000"",
+            ""ask_px"": ""7004.250000000"",
+            ""bid_sz"": 11,
+            ""ask_sz"": 15,
+            ""bid_ct"": 1,
+            ""ask_ct"": 1
+        }
+    ]
+}").SetArgDisplayNames("BBO1Minute_TsEvent == ulong MaxValue");
+            yield return new TestCaseData(@"{
+    ""ts_recv"": ""1768137120000000000"",
+    ""hd"": {
+        ""ts_event"": ""18446744073709551615"",
+        ""rtype"": 196,
+        ""publisher_id"": 1,
+        ""instrument_id"": 42140878
+    },
+    ""side"": ""N"",
+    ""price"": null,
+    ""size"": 0,
+    ""flags"": 128,
+    ""sequence"": 811,
+    ""levels"": [
+        {
+            ""bid_px"": ""7004.000000000"",
+            ""ask_px"": ""7004.250000000"",
+            ""bid_sz"": 11,
+            ""ask_sz"": 15,
+            ""bid_ct"": 1,
+            ""ask_ct"": 1
+        }
+    ]
+}").SetArgDisplayNames("BBO1Minute_PriceNull");
         }
     }
 
@@ -153,21 +201,39 @@ public class DataBentoJsonConverterTests
         var res = json.DeserializeObject<LevelOneData>();
 
         Assert.IsNotNull(res);
-
         Assert.Greater(res.TsRecv, 0);
+        Assert.Greater(res.Flags, 0);
+        Assert.AreEqual(0, res.Depth);
 
+        Assert.NotNull(res.Header);
         Assert.Greater(res.Header.TsEvent, 0);
-        Assert.AreEqual(RecordType.MarketByPriceDepth1, res.Header.Rtype);
-        Assert.AreEqual(res.Header.PublisherId, 1);
+        Assert.AreEqual(1, res.Header.PublisherId);
         Assert.Greater(res.Header.InstrumentId, 0);
 
+        Assert.That(
+            res.Header.Rtype,
+            Is.AnyOf(
+                RecordType.MarketByPriceDepth1,
+                RecordType.BBO1Second,
+                RecordType.BBO1Minute
+            ),
+            $"Unexpected RecordType: {res.Header.Rtype}"
+        );
 
-        Assert.IsTrue(char.IsLetter(res.Action));
-        Assert.IsTrue(char.IsLetter(res.Side));
-        Assert.AreEqual(0, res.Depth);
-        Assert.Greater(res.Price, 0);
-        Assert.Greater(res.Size, 0);
-        Assert.Greater(res.Flags, 0);
+        if (res.Action != default)
+            Assert.IsTrue(char.IsLetter(res.Action), "Action must be a letter");
+        Assert.IsTrue(char.IsLetter(res.Side), "Side must be a letter");
+
+        if (res.Price is null)
+        {
+            Assert.AreEqual(0, res.Size);
+        }
+        else
+        {
+            Assert.Greater(res.Price, 0);
+            Assert.Greater(res.Size, 0);
+        }
+
         Assert.IsNotNull(res.Levels);
         Assert.AreEqual(1, res.Levels.Count);
         var level = res.Levels[0];

@@ -23,7 +23,7 @@ public sealed class LevelOneData : MarketDataBase
     /// <summary>
     /// The capture-server-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
     /// </summary>
-    public long TsRecv { get; set; }
+    public ulong TsRecv { get; set; }
 
     /// <summary>
     /// The event type or order book operation. Can be Add, Cancel, Modify, cleaR book, Trade, Fill, or None.
@@ -43,7 +43,7 @@ public sealed class LevelOneData : MarketDataBase
     /// <summary>
     /// Price associated with the update.
     /// </summary>
-    public decimal Price { get; set; }
+    public decimal? Price { get; set; }
 
     /// <summary>
     /// The side that initiates the event.

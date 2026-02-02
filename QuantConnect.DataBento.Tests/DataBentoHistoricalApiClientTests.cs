@@ -118,6 +118,26 @@ public class DataBentoHistoricalApiClientTests
         }
     }
 
+    [TestCase("ESH6", "2026/01/11", "2026/01/20", Resolution.Minute)]
+    public void GetLevelOneDataWithDifferentResolutions(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
+    {
+        var dataCounter = 0;
+        var previousEndTime = DateTime.MinValue;
+        foreach (var data in _client.GetLevelOneData(ticker, startDate, endDate, resolution, Dataset))
+        {
+            Assert.IsNotNull(data);
+            Assert.Greater(data.Price, 0m);
+            Assert.Greater(data.Size, 0);
+            Assert.AreNotEqual(default(DateTime), data.Header.UtcTime);
+            Assert.IsTrue(data.Header.UtcTime > previousEndTime,
+                $"Bar at {data.Header.UtcTime:o} is not after previous bar at {previousEndTime:o}");
+            previousEndTime = data.Header.UtcTime;
+            dataCounter++;
+        }
+        Log.Trace($"{nameof(GetLevelOneDataWithDifferentResolutions)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
+        Assert.Greater(dataCounter, 0);
+    }
+
     [TestCase("ESH6 C6875", "2026/01/11", "2026/01/20", Resolution.Daily)]
     public void ShouldFetchOpenInterest(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
     {
@@ -146,7 +166,7 @@ public class DataBentoHistoricalApiClientTests
     {
         var dataCounter = 0;
         var previousEndTime = DateTime.MinValue;
-        foreach (var data in _client.GetTickBars(ticker, startDate, endDate, Dataset))
+        foreach (var data in _client.GetLevelOneData(ticker, startDate, endDate, resolution, Dataset))
         {
             Assert.IsNotNull(data);
             Assert.Greater(data.Price, 0m);

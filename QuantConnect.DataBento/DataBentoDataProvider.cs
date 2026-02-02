@@ -120,13 +120,13 @@ public partial class DataBentoProvider : IDataQueueHandler
 
     private void OnConnectionLost(object? _, ConnectionLostEventArgs cle)
     {
-        LogTrace(nameof(OnConnectionLost), "The connection was lost. Starting ReSubscription process");
+        Log.Trace($"{nameof(DataBentoProvider)}.{nameof(OnConnectionLost)}: The connection was lost. Starting ReSubscription process");
 
         var symbols = _levelOneServiceManager.GetSubscribedSymbols();
 
         Subscribe(symbols);
 
-        LogTrace(nameof(OnConnectionLost), $"Re-subscription completed successfully for {_levelOneServiceManager.Count} symbol(s).");
+        Log.Trace($"{nameof(DataBentoProvider)}.{nameof(OnConnectionLost)}: Re-subscription completed successfully for {_levelOneServiceManager.Count} symbol(s).");
     }
 
     private void OnSymbolMappingConfirmation(object? _, SymbolMappingConfirmationEventArgs smce)
