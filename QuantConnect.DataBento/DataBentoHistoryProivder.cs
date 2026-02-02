@@ -218,31 +218,30 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     private IEnumerable<BaseData> GetIntraDayQuoteBars(HistoryRequest request, Resolution resolution, string brokerageSymbol, string dataBentoDataSet)
     {
         var period = resolution.ToTimeSpan();
-        foreach (var quoteBar in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, resolution, dataBentoDataSet))
+        foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, resolution, dataBentoDataSet))
         {
-            var time = quoteBar.Header.UtcTime.ConvertFromUtc(request.DataTimeZone);
-            foreach (var level in quoteBar.Levels)
+            var time = q.Header.UtcTime.ConvertFromUtc(request.DataTimeZone);
+            var topLevel = q.Levels.Single();
+
+            if (!topLevel.HasBidOrAskPrice())
             {
-                if (!level.HasBidOrAskPrice())
-                {
-                    continue;
-                }
-
-                var bar = new QuoteBar(time, request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
-
-                if (level.BidPx.HasValue)
-                {
-                    bar.UpdateBid(level.BidPx.Value, level.BidSz);
-                }
-
-                if (level.AskPx.HasValue)
-                {
-                    bar.UpdateAsk(level.AskPx.Value, level.AskSz);
-
-                }
-
-                yield return bar;
+                continue;
             }
+
+            var bar = new QuoteBar(time, request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
+
+            if (topLevel.BidPx.HasValue)
+            {
+                bar.UpdateBid(topLevel.BidPx.Value, topLevel.BidSz);
+            }
+
+            if (topLevel.AskPx.HasValue)
+            {
+                bar.UpdateAsk(topLevel.AskPx.Value, topLevel.AskSz);
+
+            }
+
+            yield return bar;
         }
     }
 
@@ -251,15 +250,14 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
         foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, Resolution.Tick, dataBentoDataSet))
         {
             var time = q.Header.UtcTime.ConvertFromUtc(request.DataTimeZone);
-            foreach (var level in q.Levels)
-            {
-                if (!level.HasBidOrAskPrice())
-                {
-                    continue;
-                }
+            var topLevel = q.Levels.Single();
 
-                yield return new Tick(time, request.Symbol, level.BidSz, level.BidPx ?? 0m, level.AskSz, level.AskPx ?? 0m);
+            if (!topLevel.HasBidOrAskPrice())
+            {
+                continue;
             }
+
+            yield return new Tick(time, request.Symbol, topLevel.BidSz, topLevel.BidPx ?? 0m, topLevel.AskSz, topLevel.AskPx ?? 0m);
         }
     }
 }
