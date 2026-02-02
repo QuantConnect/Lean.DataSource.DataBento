@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
@@ -53,6 +53,11 @@ public class HistoricalAPIClient : IDisposable
     /// </summary>
     /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/mbp-1"/></remarks>
     private const string MBP1Schema = "mbp-1";
+
+    private bool _dataStartBeforeAvailableStartErrorFired;
+    private bool _dataEndAfterAvailableEndErrorFired;
+    private bool _dataTimeRangeStartOnOrAfterEndErrorFired;
+    private bool _dataStartAfterAvailableEndErrorFired;
 
     /// <summary>
     /// Market statistics data (e.g. volume, trades, session statistics).
@@ -177,36 +182,40 @@ public class HistoricalAPIClient : IDisposable
 
                 var error = line.DeserializeObject<ErrorResponse>();
 
-                switch (error?.Detail?.Case)
+                switch (error.Detail.Case)
                 {
                     case ErrorCases.DataStartBeforeAvailableStart:
                         start = error.Detail.Payload.AvailableStart.UtcDateTime;
-                        if (end > error.Detail.Payload.AvailableEnd.UtcDateTime)
+                        if (!_dataStartBeforeAvailableStartErrorFired)
                         {
-                            end = error.Detail.Payload.AvailableEnd.UtcDateTime;
-
+                            _dataStartBeforeAvailableStartErrorFired = true;
+                            LogUnprocessableContentError(dataSet, symbol, schema,
+                                $"Message: {error.Detail.Message} Adjust[Start]: Requested = {startDateTimeUtc:O}, New = {start:O}");
                         }
-                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {ErrorCases.DataStartBeforeAvailableStart}, " +
-                            $"Start {startDateTimeUtc:O}->{start:O}, End {endDateTimeUtc:O}->{end:O}");
                         continue;
                     case ErrorCases.DataEndAfterAvailableEnd:
                         end = error.Detail.Payload.AvailableEnd.UtcDateTime;
-                        var startBound = end - endDateTimeUtc.Subtract(startDateTimeUtc);
-                        start = startBound < error.Detail.Payload.AvailableStart.UtcDateTime
-                            ? error.Detail.Payload.AvailableStart.UtcDateTime
-                            : startBound;
-                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {ErrorCases.DataEndAfterAvailableEnd}, " +
-                            $"Start {startDateTimeUtc:O}->{start:O}, End {endDateTimeUtc:O}->{end:O}");
+                        if (!_dataEndAfterAvailableEndErrorFired)
+                        {
+                            _dataEndAfterAvailableEndErrorFired = true;
+                            LogUnprocessableContentError(dataSet, symbol, schema,
+                                $"Message: {error.Detail.Message} Adjust[End]: Requested = {endDateTimeUtc:O}, New = {end:O}");
+                        }
                         continue;
                     case ErrorCases.DataTimeRangeStartOnOrAfterEnd:
-                        Log.Error($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {error.Detail.Message}");
+                        if (!_dataTimeRangeStartOnOrAfterEndErrorFired)
+                        {
+                            _dataTimeRangeStartOnOrAfterEndErrorFired = true;
+                            LogUnprocessableContentError(dataSet, symbol, schema, error.Detail.Message);
+                        }
                         yield break;
                     case ErrorCases.DataStartAfterAvailableEnd:
-                        end = error.Detail.Payload.AvailableEnd.UtcDateTime;
-                        start = end - endDateTimeUtc.Subtract(startDateTimeUtc);
-                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}: {ErrorCases.DataStartAfterAvailableEnd}, " +
-                            $"Start {startDateTimeUtc:O}->{start:O}, End {endDateTimeUtc:O}->{end:O}");
-                        continue;
+                        if (!_dataStartAfterAvailableEndErrorFired)
+                        {
+                            _dataStartAfterAvailableEndErrorFired = true;
+                            LogUnprocessableContentError(dataSet, symbol, schema, error.Detail.Message);
+                        }
+                        yield break;
                     default:
                         Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}.Response: {line}. " +
                             $"Request: [{response.RequestMessage?.Method}]({response.RequestMessage?.RequestUri}), " +
@@ -250,5 +259,17 @@ public class HistoricalAPIClient : IDisposable
                 Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(LogWarnings)}: {warning}");
             }
         }
+    }
+
+    /// <summary>
+    /// Common Logging for Unprocessable Content errors
+    /// </summary>
+    /// <param name="dataSet">The DataBento DataSet Id name</param>
+    /// <param name="symbol">The requested symbol</param>
+    /// <param name="schema">The requested schema</param>
+    /// <param name="message">The message which API provided or custom one</param>
+    private static void LogUnprocessableContentError(string dataSet, string symbol, string schema, string message)
+    {
+        Log.Error($"HistoricalAPIClient.GetRange [{dataSet}|{symbol}|{schema}]: {message}");
     }
 }
