@@ -129,7 +129,23 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
             return null;
         }
 
-        return history;
+        return FilterHistory(history, historyRequest, historyRequest.StartTimeLocal, historyRequest.EndTimeLocal);
+    }
+
+    private static IEnumerable<BaseData> FilterHistory(IEnumerable<BaseData> history, HistoryRequest request, DateTime startTimeLocal, DateTime endTimeLocal)
+    {
+        // cleaning the data before returning it back to user
+        foreach (var bar in history)
+        {
+            if (bar.Time >= startTimeLocal && bar.EndTime <= endTimeLocal)
+            {
+                if (request.ExchangeHours.IsOpen(bar.Time, bar.EndTime, request.IncludeExtendedMarketHours))
+                {
+                    Interlocked.Increment(ref _dataPointCount);
+                    yield return bar;
+                }
+            }
+        }
     }
 
     private IEnumerable<BaseData> GetOpenInterestBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
