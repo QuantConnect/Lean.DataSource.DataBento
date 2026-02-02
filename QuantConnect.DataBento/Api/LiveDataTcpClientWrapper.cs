@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
@@ -82,7 +82,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             }
 
             var retryDelayMs = attemptToConnect * 2 * 1000;
-            LogError(nameof(Connect), $"Connection attempt #{attemptToConnect} failed. Retrying in {retryDelayMs} ms. Error: {error}");
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Connect)}: Connection attempt #{attemptToConnect} failed. Retrying in {retryDelayMs} ms. Error: {error}");
             _cancellationTokenSource.Token.WaitHandle.WaitOne(attemptToConnect * 2 * 1000);
 
         } while (attemptToConnect++ < 5 && !_isConnected);
@@ -129,7 +129,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
         var readTimeout = _heartBeatInterval.Add(TimeSpan.FromSeconds(5));
 
-        LogTrace(methodName, "Task Receiver started");
+        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: Task Receiver started");
 
         var errorMessage = string.Empty;
 
@@ -154,16 +154,16 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
         catch (OperationCanceledException oce)
         {
             errorMessage = $"Read timeout exceeded: Outer CancellationToken: {ct.IsCancellationRequested}, Read Timeout: {readTimeoutCts.IsCancellationRequested}";
-            LogTrace(methodName, errorMessage);
+            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: " + errorMessage);
         }
         catch (Exception ex)
         {
             errorMessage += ex.Message;
-            LogError(methodName, $"Error processing messages: {ex.Message}\n{ex.StackTrace}");
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: Error processing messages: {ex.Message}\n{ex.StackTrace}");
         }
         finally
         {
-            LogTrace(methodName, "Task Receiver stopped");
+            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: Task Receiver stopped");
             Close();
             readTimeoutCts.Dispose();
             ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient.Connected}"));
@@ -196,12 +196,12 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
             if (Log.DebuggingEnabled)
             {
-                LogDebug(nameof(Authenticate), $"Received initial message: {versionLine}, {cramLine}");
+                Log.Debug($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Received initial message: {versionLine}, {cramLine}");
             }
 
             var request = new AuthenticationMessageRequest(cramLine, _apiKey, dataSet, _heartBeatInterval);
 
-            LogTrace("Authenticate", $"Sending CRAM reply: {request}");
+            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Sending CRAM reply: {request}");
 
             WriteData(request.ToString());
 
@@ -211,11 +211,11 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
             if (!authenticationResponse.Success)
             {
-                LogError(nameof(Authenticate), $"Authentication response: {authResponse}");
+                Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Authentication response: {authResponse}");
                 return false;
             }
 
-            LogTrace(nameof(Authenticate), $"Successfully authenticated with session ID: {authenticationResponse.SessionId}");
+            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Successfully authenticated with session ID: {authenticationResponse.SessionId}");
 
             WriteData(request.GetStartSessionMessage()); // after start_session -> we get heartbeats and data
 
@@ -231,20 +231,5 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
     {
         dataset = dataset.Replace('.', '-').ToLowerInvariant();
         return dataset + ".lsg.databento.com";
-    }
-
-    private void LogTrace(string method, string message)
-    {
-        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{method}: {message}");
-    }
-
-    private void LogError(string method, string message)
-    {
-        Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{method}: {message}");
-    }
-
-    private void LogDebug(string method, string message)
-    {
-        Log.Debug($"LiveDataTcpClientWrapper[{_dataSet}].{method}: {message}");
     }
 }

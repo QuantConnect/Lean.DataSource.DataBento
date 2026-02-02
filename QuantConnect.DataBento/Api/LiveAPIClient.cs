@@ -58,7 +58,7 @@ public sealed class LiveAPIClient : IDisposable
             return liveDataTcpClient;
         }
 
-        LogTrace(nameof(EnsureDatasetConnection), "Starting connection to DataBento live API");
+        Log.Trace($"LiveAPIClient.{nameof(EnsureDatasetConnection)}: Starting connection to DataBento live API");
 
         if (liveDataTcpClient == null)
         {
@@ -66,7 +66,7 @@ public sealed class LiveAPIClient : IDisposable
 
             liveDataTcpClient.ConnectionLost += (sender, message) =>
             {
-                LogError(nameof(EnsureDatasetConnection), $"Connection lost to DataBento live API (Dataset: {dataSet}). Reason: {message}");
+                Log.Error($"LiveAPIClient.{nameof(EnsureDatasetConnection)}: Connection lost to DataBento live API (Dataset: {dataSet}). Reason: {message}");
                 ConnectionLost?.Invoke(this, new ConnectionLostEventArgs(dataSet, message));
             };
 
@@ -78,11 +78,11 @@ public sealed class LiveAPIClient : IDisposable
         if (!liveDataTcpClient.IsConnected)
         {
             var msg = $"Unable to establish a connection to the DataBento Live API (Dataset: {dataSet}).";
-            LogError(nameof(EnsureDatasetConnection), msg);
+            Log.Error($"LiveAPIClient.{nameof(EnsureDatasetConnection)}: " + msg);
             throw new Exception(msg);
         }
 
-        LogTrace(nameof(EnsureDatasetConnection), $"Successfully connected to DataBento live API (Dataset: {dataSet})");
+        Log.Trace($"LiveAPIClient.{nameof(EnsureDatasetConnection)}: Successfully connected to DataBento live API (Dataset: {dataSet})");
 
         return liveDataTcpClient;
     }
@@ -99,7 +99,7 @@ public sealed class LiveAPIClient : IDisposable
 
         if (data == null)
         {
-            LogError(nameof(MessageReceived), $"Failed to deserialize live data message: {message}");
+            Log.Error($"LiveAPIClient.{nameof(MessageReceived)}: Failed to deserialize live data message: {message}");
             return;
         }
 
@@ -112,18 +112,8 @@ public sealed class LiveAPIClient : IDisposable
                 _levelOneDataHandler?.Invoke(lod);
                 break;
             default:
-                LogError(nameof(MessageReceived), $"Received unsupported record type: {data.Header.Rtype}. Message: {message}");
+                Log.Error($"LiveAPIClient.{nameof(MessageReceived)}: Received unsupported record type: {data.Header.Rtype}. Message: {message}");
                 break;
         }
-    }
-
-    private static void LogTrace(string method, string message)
-    {
-        Log.Trace($"LiveAPIClient.{method}: {message}");
-    }
-
-    private static void LogError(string method, string message)
-    {
-        Log.Error($"LiveAPIClient.{method}: {message}");
     }
 }
