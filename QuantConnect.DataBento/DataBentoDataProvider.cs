@@ -141,7 +141,7 @@ public partial class DataBentoProvider : IDataQueueHandler
     {
         if (_subscribedSymbolsByDataBentoInstrumentId.TryGetValue(levelOneData.Header.InstrumentId, out var symbol))
         {
-            var time = levelOneData.Header.UtcDateTime;;
+            var time = levelOneData.Header.UtcDateTime;
             if (time == null)
             {
                 return;
