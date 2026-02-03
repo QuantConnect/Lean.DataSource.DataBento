@@ -282,7 +282,7 @@ public partial class DataBentoProvider : IDataQueueHandler
     {
         try
         {
-            const int productId = 306;
+            const int productId = 427;
             var userId = Globals.UserId;
             var token = Globals.UserToken;
             var organizationId = Globals.OrganizationID;
