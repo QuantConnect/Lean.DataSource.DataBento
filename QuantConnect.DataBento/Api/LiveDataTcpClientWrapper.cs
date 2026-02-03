@@ -71,9 +71,12 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             {
                 _tcpClient = new(_gateway, DefaultPort);
                 _stream = _tcpClient.GetStream();
+                // Set read timeout slightly above the heartbeat interval to tolerate network latency.
+                // A timeout helps detect stalled or lost connections in DataReceiverAsync.
+                _stream.ReadTimeout = Convert.ToInt32(_heartBeatInterval.Add(TimeSpan.FromSeconds(5)).TotalMilliseconds);
                 _reader = new StreamReader(_stream, Encoding.ASCII);
 
-                if (!Authenticate(_dataSet).SynchronouslyAwaitTask())
+                if (!Authenticate(_reader, _dataSet))
                 {
                     throw new AuthenticationException($"Authentication failed for [{_dataSet}]. Please check your API key.");
                 }
@@ -163,73 +166,74 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
             try
             {
-                errorMessage = DataReceiverAsync(ct).SynchronouslyAwaitTaskResult();
+                errorMessage = DataReceiver(ct);
             }
             finally
             {
-                _connectionOpenResetEvent.Reset();
+                if (!ct.IsCancellationRequested)
+                {
+                    _connectionOpenResetEvent.Reset();
+                }
             }
 
             if (!ct.IsCancellationRequested)
             {
-                ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient.Connected}"));
+                ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient?.Connected}"));
             }
         }
         Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: Stopping connection monitor loop");
     }
 
-    private async Task<string> DataReceiverAsync(CancellationToken outerCt)
+    /// <summary>
+    /// Synchronously reads incoming messages from the TCP stream and dispatches them to subscribers.
+    /// </summary>
+    /// <remarks>
+    /// The method runs until the connection is closed or cancellation is requested.
+    /// Read timeouts and I/O errors are treated as connection failures and trigger cleanup.
+    /// </remarks>
+    private string DataReceiver(CancellationToken ct)
     {
-        var methodName = nameof(DataReceiverAsync);
-
-        var readTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(outerCt);
-
-        var readTimeout = _heartBeatInterval.Add(TimeSpan.FromSeconds(5));
-
-        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: Task Receiver started");
+        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(DataReceiver)}: started");
 
         var errorMessage = string.Empty;
 
         try
         {
-            while (!outerCt.IsCancellationRequested && IsConnected)
+            while (!ct.IsCancellationRequested && IsConnected)
             {
-                // Reset timeout
-                readTimeoutCts.CancelAfter(readTimeout);
-
-                var line = await ReadDataAsync(readTimeoutCts.Token);
+                var line = _reader?.ReadLine();
 
                 if (line == null)
                 {
-                    Log.Error("Remote closed connection");
+                    errorMessage = "Remote closed the connection";
+                    Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(DataReceiver)}: {errorMessage}");
                     break;
                 }
 
                 MessageReceived.Invoke(line);
             }
         }
-        catch (OperationCanceledException oce)
+        catch (OperationCanceledException)
         {
-            errorMessage = $"Read timeout exceeded: Outer CancellationToken: {outerCt.IsCancellationRequested}, Read Timeout: {readTimeoutCts.IsCancellationRequested}";
-            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: " + errorMessage);
+            errorMessage = $"Read timeout detected (CancellationRequested={ct.IsCancellationRequested})";
+            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(DataReceiver)}: " + errorMessage);
+        }
+        catch (IOException ioex)
+        {
+            errorMessage = ioex.Message;
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(DataReceiver)}.IOException: " + errorMessage);
         }
         catch (Exception ex)
         {
             errorMessage += ex.Message;
-            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: Error processing messages: {ex.Message}\n{ex.StackTrace}");
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(DataReceiver)}.Exception: Error processing messages: {ex.Message}\n{ex.StackTrace}");
         }
         finally
         {
             CleanupConnection();
-            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: Task Receiver stopped");
         }
-
+        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(DataReceiver)}: stopped");
         return errorMessage;
-    }
-
-    private async Task<string?> ReadDataAsync(CancellationToken cancellationToken)
-    {
-        return await _reader.ReadLineAsync(cancellationToken);
     }
 
     private void WriteData(string data)
@@ -242,46 +246,55 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
         _stream.Write(bytes, 0, bytes.Length);
     }
 
-    private async Task<bool> Authenticate(string dataSet)
+    private bool Authenticate(StreamReader reader, string dataSet)
     {
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(_cancellationTokenSource.Token);
+        var versionLine = default(string);
+        var cramLine = default(string);
 
         try
         {
-            var versionLine = await ReadDataAsync(cts.Token);
-            var cramLine = await ReadDataAsync(cts.Token);
-
-            if (Log.DebuggingEnabled)
-            {
-                Log.Debug($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Received initial message: {versionLine}, {cramLine}");
-            }
-
-            var request = new AuthenticationMessageRequest(cramLine, _apiKey, dataSet, _heartBeatInterval);
-
-            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Sending CRAM reply: {request}");
-
-            WriteData(request.ToString());
-
-            var authResponse = await ReadDataAsync(cts.Token);
-
-            var authenticationResponse = new AuthenticationMessageResponse(authResponse);
-
-            if (!authenticationResponse.Success)
-            {
-                Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Authentication response: {authResponse}");
-                return false;
-            }
-
-            Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Successfully authenticated with session ID: {authenticationResponse.SessionId}");
-
-            WriteData(request.GetStartSessionMessage()); // after start_session -> we get heartbeats and data
-
-            return true;
+            versionLine = reader.ReadLine();
+            cramLine = reader.ReadLine();
         }
-        finally
+        catch
         {
-            cts.DisposeSafely();
+            return false;
         }
+
+        if (Log.DebuggingEnabled)
+        {
+            Log.Debug($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Received initial message: {versionLine}, {cramLine}");
+        }
+
+        var request = new AuthenticationMessageRequest(cramLine, _apiKey, dataSet, _heartBeatInterval);
+
+        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Sending CRAM reply: {request}");
+
+        WriteData(request.ToString());
+
+        var authResponse = default(string);
+        try
+        {
+            authResponse = reader.ReadLine();
+        }
+        catch
+        {
+            return false;
+        }
+
+        var authenticationResponse = new AuthenticationMessageResponse(authResponse);
+
+        if (!authenticationResponse.Success)
+        {
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Authentication response: {authResponse}");
+            return false;
+        }
+
+        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Authenticate)}: Successfully authenticated with session ID: {authenticationResponse.SessionId}");
+
+        WriteData(request.GetStartSessionMessage()); // after start_session -> we get heartbeats and data
+
+        return true;
     }
 
     private static string DetermineGateway(string dataset)
