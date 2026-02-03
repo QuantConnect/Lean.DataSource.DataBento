@@ -254,7 +254,6 @@ public class HistoricalAPIClient : IDisposable
             var lastEmitted = default(T);
             while ((line = reader.ReadLine()) != null)
             {
-                Log.Trace($"line: {line}");
                 lastEmitted = line.DeserializeObject<T>();
 
                 if (lastEmitted == null)
@@ -267,15 +266,13 @@ public class HistoricalAPIClient : IDisposable
             // Advance start by one tick to move the time window forward without duplication.
             // The API range is inclusive, so this ensures the next request starts
             // strictly after the last emitted record and avoids re-fetching it.
-            if (lastEmitted!.TryGetDateTimeUtc(out var lastEmittedUtcTime))
-            {
-                start = lastEmittedUtcTime.AddTicks(1);
-            }
-            else
+            var lastEmittedTime = (lastEmitted as LevelOneData)?.UtcDateTime ?? lastEmitted?.Header.UtcDateTime;
+            if (!lastEmittedTime.HasValue)
             {
                 LogDetailError("AdvanceStartByOneTick", line, response, formData);
                 yield break;
             }
+            start = lastEmittedTime.Value.AddTicks(1);
         } while (httpStatusCode != HttpStatusCode.OK);
     }
 

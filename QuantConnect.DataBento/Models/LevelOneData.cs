@@ -21,6 +21,34 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 public sealed class LevelOneData : MarketDataBase
 {
     /// <summary>
+    /// The capture-server-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
+    /// </summary>
+    public ulong? TsRecv { get; set; }
+
+    /// <summary>
+    /// Gets the event timestamp converted to a UTC <see cref="DateTime"/>,
+    /// or <c>null</c> when the timestamp is undefined.
+    /// </summary>
+    /// <remarks>
+    /// The value is derived from <see cref="TsRecv"/>, which represents the number of
+    /// nanoseconds since the UNIX epoch.
+    /// <para/>
+    /// A value of <see cref="ulong.MaxValue"/> (UNDEF_TIMESTAMP = 18446744073709551615)
+    /// indicates a null or undefined timestamp and results in <c>null</c>.
+    /// <para/>
+    /// See DataBento timestamp conventions:
+    /// <see href="https://databento.com/docs/standards-and-conventions/common-fields-enums-types#timestamps"/>
+    /// <para/>
+    /// Use for <see cref="Api.HistoricalAPIClient.BBO1mSchema"/> and <seealso cref="Api.HistoricalAPIClient.BBO1sSchema"/> data only.
+    /// </remarks>
+    public DateTime? UtcDateTime
+    {
+        get => TsRecv == ulong.MaxValue
+            ? null
+            : Time.UnixNanosecondTimeStampToDateTime(Convert.ToInt64(TsRecv));
+    }
+
+    /// <summary>
     /// The event type or order book operation. Can be Add, Cancel, Modify, cleaR book, Trade, Fill, or None.
     /// </summary>
     public char Action { get; set; }

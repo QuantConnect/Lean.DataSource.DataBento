@@ -42,4 +42,25 @@ public sealed class Header
     /// Internal instrument identifier for the symbol.
     /// </summary>
     public uint InstrumentId { get; set; }
+
+    /// <summary>
+    /// Gets the event timestamp converted to a UTC <see cref="DateTime"/>,
+    /// or <c>null</c> when the timestamp is undefined.
+    /// </summary>
+    /// <remarks>
+    /// The value is derived from <see cref="TsEvent"/>, which represents the number of
+    /// nanoseconds since the UNIX epoch.
+    /// <para/>
+    /// A value of <see cref="ulong.MaxValue"/> (UNDEF_TIMESTAMP = 18446744073709551615)
+    /// indicates a null or undefined timestamp and results in <c>null</c>.
+    /// <para/>
+    /// See DataBento timestamp conventions:
+    /// <see href="https://databento.com/docs/standards-and-conventions/common-fields-enums-types#timestamps"/>
+    /// </remarks>
+    public DateTime? UtcDateTime
+    {
+        get => TsEvent == ulong.MaxValue
+            ? null
+            : Time.UnixNanosecondTimeStampToDateTime(Convert.ToInt64(TsEvent));
+    }
 }

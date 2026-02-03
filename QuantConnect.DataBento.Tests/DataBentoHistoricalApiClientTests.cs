@@ -99,13 +99,12 @@ public class DataBentoHistoricalApiClientTests
             Assert.Greater(data.Close, 0m);
             Assert.Greater(data.Volume, 0m);
 
-            Assert.IsTrue(data.TryGetDateTimeUtc(out var dataTime));
+            var dateTime = data.Header.UtcDateTime.Value;
+            Assert.AreNotEqual(default(DateTime), dateTime);
 
-            Assert.AreNotEqual(default(DateTime), dataTime);
-
-            Assert.IsTrue(dataTime > previousEndTime,
-                $"Bar at {dataTime:o} is not after previous bar at {previousEndTime:o}");
-            previousEndTime = dataTime;
+            Assert.IsTrue(dateTime > previousEndTime,
+                $"Bar at {dateTime:o} is not after previous bar at {previousEndTime:o}");
+            previousEndTime = dateTime;
 
             dataCounter++;
         }
@@ -132,12 +131,11 @@ public class DataBentoHistoricalApiClientTests
             Assert.Greater(data.Price, 0m);
             Assert.Greater(data.Size, 0);
 
-            Assert.IsTrue(data.TryGetDateTimeUtc(out var dataTime));
-
-            Assert.AreNotEqual(default(DateTime), dataTime);
-            Assert.IsTrue(dataTime > previousEndTime,
-                $"Bar at {dataTime:o} is not after previous bar at {previousEndTime:o}");
-            previousEndTime = dataTime;
+            var dateTime = data.UtcDateTime.Value;
+            Assert.AreNotEqual(default(DateTime), dateTime);
+            Assert.IsTrue(dateTime > previousEndTime,
+                $"Bar at {dateTime:o} is not after previous bar at {previousEndTime:o}");
+            previousEndTime = dateTime;
             dataCounter++;
         }
         Log.Trace($"{nameof(GetLevelOneDataWithDifferentResolutions)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (bars)");
@@ -155,12 +153,12 @@ public class DataBentoHistoricalApiClientTests
 
             Assert.Greater(data.Quantity, 0m);
 
-            Assert.IsTrue(data.TryGetDateTimeUtc(out var dataTime));
-            Assert.AreNotEqual(default(DateTime), dataTime);
+            var dattTime = data.Header.UtcDateTime.Value;
+            Assert.AreNotEqual(default(DateTime), dattTime);
 
-            Assert.IsTrue(dataTime > previousEndTime,
-                $"Bar at {dataTime:o} is not after previous bar at {previousEndTime:o}");
-            previousEndTime = dataTime;
+            Assert.IsTrue(dattTime > previousEndTime,
+                $"Bar at {dattTime:o} is not after previous bar at {previousEndTime:o}");
+            previousEndTime = dattTime;
 
             dataCounter++;
         }
@@ -180,8 +178,7 @@ public class DataBentoHistoricalApiClientTests
             Assert.Greater(data.Price, 0m);
             Assert.Greater(data.Size, 0);
 
-            Assert.IsTrue(data.TryGetDateTimeUtc(out var dataTime));
-
+            var dataTime = data.Header.UtcDateTime.Value;
             Assert.AreNotEqual(default(DateTime), dataTime);
             previousEndTime = dataTime;
             dataCounter++;

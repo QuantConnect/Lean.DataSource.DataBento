@@ -210,7 +210,7 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(1, res.Header.PublisherId);
         Assert.Greater(res.Header.InstrumentId, 0);
 
-        Assert.IsTrue(res.TryGetDateTimeUtc(out var dataTime));
+        var dataTime = res.UtcDateTime.Value;
         Assert.AreNotEqual(default(DateTime), dataTime);
 
         Assert.That(
@@ -293,7 +293,6 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(42566722, res.Header.InstrumentId);
         Assert.AreEqual(470m, res.Quantity);
         Assert.AreEqual(StatisticType.OpenInterest, res.StatType);
-        Assert.Greater(res.TsRecv, 0);
     }
 
     private static IEnumerable<TestCaseData> SystemLiveMessages

@@ -48,17 +48,6 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     private bool _dataBentoDatasetErrorFired;
 
     /// <summary>
-    /// Provides access to exchange trading hours and time zone data
-    /// loaded from the market-hours database.
-    /// </summary>
-    private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
-
-    /// <summary>
-    /// Caches exchange time zones per symbol to avoid repeated lookups.
-    /// </summary>
-    private readonly Dictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = [];
-
-    /// <summary>
     /// Gets the total number of data points emitted by this history provider
     /// </summary>
     public override int DataPointCount => _dataPointCount;
@@ -169,12 +158,12 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     {
         foreach (var oi in _historicalApiClient.GetOpenInterest(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
-            if (!oi.TryGetDateTimeUtc(out var time))
+            if (oi.Header.UtcDateTime == null)
             {
                 continue;
             }
 
-            yield return new OpenInterest(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, oi.Quantity);
+            yield return new OpenInterest(oi.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, oi.Quantity);
         }
     }
 
@@ -183,12 +172,12 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
         var period = request.Resolution.ToTimeSpan();
         foreach (var b in _historicalApiClient.GetHistoricalOhlcvBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, request.Resolution, dataBentoDataSet))
         {
-            if (!b.TryGetDateTimeUtc(out var time))
+            if (b.Header.UtcDateTime == null)
             {
                 continue;
             }
 
-            yield return new TradeBar(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, b.Open, b.High, b.Low, b.Close, b.Volume, period);
+            yield return new TradeBar(b.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, b.Open, b.High, b.Low, b.Close, b.Volume, period);
         }
     }
 
@@ -201,12 +190,12 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
         {
             if (t.Price.HasValue)
             {
-                if (!t.TryGetDateTimeUtc(out var time))
+                if (t.Header.UtcDateTime == null)
                 {
                     continue;
                 }
 
-                yield return new Tick(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, "", "", t.Size, t.Price.Value);
+                yield return new Tick(t.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, "", "", t.Size, t.Price.Value);
             }
         }
     }
@@ -233,12 +222,12 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
                 continue;
             }
 
-            if (!q.TryGetDateTimeUtc(out var time))
+            if (q.UtcDateTime == null)
             {
                 continue;
             }
 
-            var bar = new QuoteBar(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
+            var bar = new QuoteBar(q.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
 
             if (topLevel.BidPx.HasValue)
             {
@@ -265,40 +254,12 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
                 continue;
             }
 
-            if (!q.TryGetDateTimeUtc(out var time))
+            if (q.Header.UtcDateTime == null)
             {
                 continue;
             }
 
-            yield return new Tick(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, topLevel.BidSz, topLevel.BidPx ?? 0m, topLevel.AskSz, topLevel.AskPx ?? 0m);
+            yield return new Tick(q.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, topLevel.BidSz, topLevel.BidPx ?? 0m, topLevel.AskSz, topLevel.AskPx ?? 0m);
         }
-    }
-
-    /// <summary>
-    /// Converts the given UTC time into the symbol security exchange time zone
-    /// </summary>
-    private DateTime ConvertUtcToExchangeTime(Symbol symbol, DateTime utcTime)
-    {
-        var exchangeTimeZone = default(DateTimeZone);
-        lock (_symbolExchangeTimeZones)
-        {
-            if (!_symbolExchangeTimeZones.TryGetValue(symbol, out exchangeTimeZone))
-            {
-                // read the exchange time zone from market-hours-database
-                if (_marketHoursDatabase.TryGetEntry(symbol.ID.Market, symbol, symbol.SecurityType, out var entry))
-                {
-                    exchangeTimeZone = entry.ExchangeHours.TimeZone;
-                }
-                // If there is no entry for the given Symbol, default to New York
-                else
-                {
-                    exchangeTimeZone = TimeZones.NewYork;
-                }
-
-                _symbolExchangeTimeZones.Add(symbol, exchangeTimeZone);
-            }
-        }
-
-        return utcTime.ConvertFromUtc(exchangeTimeZone);
     }
 }

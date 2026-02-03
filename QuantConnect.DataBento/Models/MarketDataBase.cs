@@ -25,58 +25,8 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 public abstract class MarketDataBase
 {
     /// <summary>
-    /// The capture-server-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
-    /// </summary>
-    public ulong? TsRecv { get; set; }
-
-    /// <summary>
     /// Gets or sets the standard metadata header for this market data record.
     /// </summary>
     [JsonProperty("hd")]
     public Header Header { get; set; }
-
-    /// <summary>
-    /// Tries to get a UTC <see cref="DateTime"/> from available nanosecond Unix timestamps.
-    /// </summary>
-    /// <remarks>
-    /// Uses <see cref="Header.TsEvent"/> first; if it is undefined (<c>UINT64_MAX</c>),
-    /// falls back to <see cref="TsRecv"/>.
-    /// <para/>
-    /// Databento timestamp conventions:
-    /// https://databento.com/docs/standards-and-conventions/common-fields-enums-types#timestamps
-    /// </remarks>
-    /// <param name="dateTimeUtc">
-    /// The resolved UTC time if successful; otherwise <see cref="DateTime.MinValue"/>.
-    /// </param>
-    /// <returns>
-    /// <c>true</c> if a valid timestamp was converted; otherwise <c>false</c>.
-    /// </returns>
-    public bool TryGetDateTimeUtc(out DateTime dateTimeUtc)
-    {
-        if (TryConvertTimestamp(Header.TsEvent, out dateTimeUtc))
-        {
-            return true;
-        }
-
-        if (TsRecv.HasValue && TryConvertTimestamp(TsRecv.Value, out dateTimeUtc))
-        {
-            return true;
-        }
-
-        dateTimeUtc = default;
-        return false;
-    }
-
-    private static bool TryConvertTimestamp(ulong timestamp, out DateTime dateTimeUtc)
-    {
-        // UINT64_MAX (18446744073709551615) denotes a null or undefined timestamp
-        if (timestamp == ulong.MaxValue)
-        {
-            dateTimeUtc = default;
-            return false;
-        }
-
-        dateTimeUtc = Time.UnixNanosecondTimeStampToDateTime(Convert.ToInt64(timestamp));
-        return true;
-    }
 }
