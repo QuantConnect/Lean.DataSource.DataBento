@@ -318,6 +318,7 @@ public class DataBentoJsonConverterTests
     }
 
     [TestCase("success=0|error=Unknown subscription param 'sssauth'", false)]
+    [TestCase("success=0|error=User has reached their open connection limit", false)]
     [TestCase("success=0|error=Authentication failed.", false)]
     [TestCase("success=1|session_id=1769508116", true)]
     public void ParsePotentialAuthenticationMessageResponses(string authenticationResponse, bool success)

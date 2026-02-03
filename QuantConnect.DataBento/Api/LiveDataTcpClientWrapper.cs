@@ -1,4 +1,4 @@
-/*
+﻿/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
@@ -18,6 +18,7 @@ using System.Text;
 using QuantConnect.Util;
 using System.Net.Sockets;
 using QuantConnect.Logging;
+using System.Security.Authentication;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Api;
@@ -31,13 +32,13 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
     private readonly string _apiKey;
     private readonly TimeSpan _heartBeatInterval = TimeSpan.FromSeconds(10);
 
-    private TcpClient _tcpClient;
-    private readonly CancellationTokenSource _cancellationTokenSource = new();
+    private TcpClient? _tcpClient;
+    private readonly CancellationTokenSource _cancellationTokenSource;
 
     private NetworkStream? _stream;
     private StreamReader? _reader;
-    private Task? _dataReceiverTask;
-    private bool _isConnected;
+    private readonly Task? _dataReceiverTask;
+    private readonly ManualResetEventSlim _connectionOpenResetEvent = new(false);
 
     private readonly Action<string> MessageReceived;
 
@@ -46,7 +47,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
     /// <summary>
     /// Is client connected
     /// </summary>
-    public bool IsConnected => _isConnected;
+    public bool IsConnected => _connectionOpenResetEvent.IsSet;
 
     public LiveDataTcpClientWrapper(string dataSet, string apiKey, Action<string> messageReceived)
     {
@@ -54,6 +55,10 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
         _dataSet = dataSet;
         _gateway = DetermineGateway(dataSet);
         MessageReceived = messageReceived;
+
+        _cancellationTokenSource = new();
+        _dataReceiverTask = new Task(() => MonitorDataReceiverConnection(_cancellationTokenSource.Token), _cancellationTokenSource.Token, TaskCreationOptions.LongRunning);
+        _dataReceiverTask.Start();
     }
 
     public void Connect()
@@ -69,15 +74,20 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
                 _reader = new StreamReader(_stream, Encoding.ASCII);
 
                 if (!Authenticate(_dataSet).SynchronouslyAwaitTask())
-                    throw new Exception("Authentication failed");
+                {
+                    throw new AuthenticationException($"Authentication failed for [{_dataSet}]. Please check your API key.");
+                }
 
-                _dataReceiverTask = new Task(async () => await DataReceiverAsync(_cancellationTokenSource.Token), _cancellationTokenSource.Token, TaskCreationOptions.LongRunning);
-                _dataReceiverTask.Start();
-
-                _isConnected = true;
+                _connectionOpenResetEvent.Set();
+                break;
+            }
+            catch (AuthenticationException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
+                CleanupConnection();
                 error = ex.Message;
             }
 
@@ -85,31 +95,44 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Connect)}: Connection attempt #{attemptToConnect} failed. Retrying in {retryDelayMs} ms. Error: {error}");
             _cancellationTokenSource.Token.WaitHandle.WaitOne(attemptToConnect * 2 * 1000);
 
-        } while (attemptToConnect++ < 5 && !_isConnected);
+        } while (attemptToConnect++ < 5 && !IsConnected);
     }
 
-    private void Close()
+    /// <summary>
+    /// Resets the connection and disposes the TCP client, stream, and reader.
+    /// </summary>
+    private void CleanupConnection()
     {
-        _isConnected = false;
+        if (_cancellationTokenSource.IsCancellationRequested)
+        {
+            // The Dispose() was called.
+            return;
+        }
+
+        _connectionOpenResetEvent?.Reset();
 
         _reader?.Close();
         _reader?.DisposeSafely();
 
-        _dataReceiverTask?.DisposeSafely();
+        _stream?.Close();
+        _stream?.DisposeSafely();
+
         _tcpClient?.Close();
         _tcpClient?.DisposeSafely();
     }
 
     public void Dispose()
     {
-        _isConnected = false;
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.DisposeSafely();
+
+        _connectionOpenResetEvent?.Reset();
+        _connectionOpenResetEvent?.DisposeSafely();
 
         _reader?.Close();
         _reader?.DisposeSafely();
 
-        _cancellationTokenSource?.Cancel();
-        _cancellationTokenSource?.DisposeSafely();
-
+        _dataReceiverTask.SynchronouslyAwaitTask();
         _dataReceiverTask?.DisposeSafely();
         _tcpClient?.Close();
         _tcpClient?.DisposeSafely();
@@ -121,11 +144,45 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
         WriteData(request);
     }
 
-    private async Task DataReceiverAsync(CancellationToken ct)
+    /// <summary>
+    /// Runs a blocking loop that waits for the connection to open, receives manager state data,
+    /// and raises a notification when the connection is lost.
+    /// </summary>
+    /// <param name="ct">
+    /// Cancellation token used to stop the loop and interrupt waiting on the connection signal.
+    /// </param>
+    private void MonitorDataReceiverConnection(CancellationToken ct)
+    {
+        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: Starting connection monitor loop");
+        while (!ct.IsCancellationRequested)
+        {
+            // Wait until the connection is opened (blocking)
+            _connectionOpenResetEvent.Wait(ct);
+
+            var errorMessage = default(string);
+
+            try
+            {
+                errorMessage = DataReceiverAsync(ct).SynchronouslyAwaitTaskResult();
+            }
+            finally
+            {
+                _connectionOpenResetEvent.Reset();
+            }
+
+            if (!ct.IsCancellationRequested)
+            {
+                ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient.Connected}"));
+            }
+        }
+        Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: Stopping connection monitor loop");
+    }
+
+    private async Task<string> DataReceiverAsync(CancellationToken outerCt)
     {
         var methodName = nameof(DataReceiverAsync);
 
-        var readTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var readTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(outerCt);
 
         var readTimeout = _heartBeatInterval.Add(TimeSpan.FromSeconds(5));
 
@@ -135,7 +192,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
         try
         {
-            while (!ct.IsCancellationRequested && IsConnected)
+            while (!outerCt.IsCancellationRequested && IsConnected)
             {
                 // Reset timeout
                 readTimeoutCts.CancelAfter(readTimeout);
@@ -153,7 +210,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
         }
         catch (OperationCanceledException oce)
         {
-            errorMessage = $"Read timeout exceeded: Outer CancellationToken: {ct.IsCancellationRequested}, Read Timeout: {readTimeoutCts.IsCancellationRequested}";
+            errorMessage = $"Read timeout exceeded: Outer CancellationToken: {outerCt.IsCancellationRequested}, Read Timeout: {readTimeoutCts.IsCancellationRequested}";
             Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: " + errorMessage);
         }
         catch (Exception ex)
@@ -163,11 +220,11 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
         }
         finally
         {
+            CleanupConnection();
             Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{methodName}: Task Receiver stopped");
-            Close();
-            readTimeoutCts.Dispose();
-            ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient.Connected}"));
         }
+
+        return errorMessage;
     }
 
     private async Task<string?> ReadDataAsync(CancellationToken cancellationToken)
