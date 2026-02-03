@@ -244,9 +244,7 @@ public class HistoricalAPIClient : IDisposable
                         }
                         yield break;
                     default:
-                        Log.Trace($"{nameof(HistoricalAPIClient)}.{nameof(GetRange)}.Response: {line}. " +
-                            $"Request: [{response.RequestMessage?.Method}]({response.RequestMessage?.RequestUri}), " +
-                            $"Payload: {string.Join(", ", formData.Select(kvp => $"{kvp.Key}: {kvp.Value}"))}");
+                        LogDetailError("UnprocessableContent", line, response, formData);
                         yield break;
                 }
             }
@@ -256,6 +254,7 @@ public class HistoricalAPIClient : IDisposable
             var lastEmitted = default(T);
             while ((line = reader.ReadLine()) != null)
             {
+                Log.Trace($"line: {line}");
                 lastEmitted = line.DeserializeObject<T>();
 
                 if (lastEmitted == null)
@@ -268,7 +267,15 @@ public class HistoricalAPIClient : IDisposable
             // Advance start by one tick to move the time window forward without duplication.
             // The API range is inclusive, so this ensures the next request starts
             // strictly after the last emitted record and avoids re-fetching it.
-            start = lastEmitted!.Header.UtcTime.AddTicks(1);
+            if (lastEmitted!.TryGetDateTimeUtc(out var lastEmittedUtcTime))
+            {
+                start = lastEmittedUtcTime.AddTicks(1);
+            }
+            else
+            {
+                LogDetailError("AdvanceStartByOneTick", line, response, formData);
+                yield break;
+            }
         } while (httpStatusCode != HttpStatusCode.OK);
     }
 
@@ -298,5 +305,12 @@ public class HistoricalAPIClient : IDisposable
     private static void LogUnprocessableContentError(string dataSet, string symbol, string schema, string message)
     {
         Log.Error($"HistoricalAPIClient.GetRange [{dataSet}|{symbol}|{schema}]: {message}");
+    }
+
+    private static void LogDetailError(string reason, string line, HttpResponseMessage response, Dictionary<string, string> payload)
+    {
+        Log.Error($"HistoricalAPIClient.GetRange: Reason: {reason}. Response: {line}. " +
+            $"Request: [{response.RequestMessage?.Method}]({response.RequestMessage?.RequestUri}), " +
+            $"Payload: {string.Join(", ", payload.Select(kvp => $"{kvp.Key}: {kvp.Value}"))}");
     }
 }

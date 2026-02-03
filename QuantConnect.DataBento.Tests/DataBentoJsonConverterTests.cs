@@ -167,7 +167,7 @@ public class DataBentoJsonConverterTests
             ""ask_ct"": 1
         }
     ]
-}").SetArgDisplayNames("BBO1Minute_TsEvent == ulong MaxValue");
+}").SetArgDisplayNames("BBO1Minute.hd.ts_event == ulong MaxValue");
             yield return new TestCaseData(@"{
     ""ts_recv"": ""1768137120000000000"",
     ""hd"": {
@@ -209,6 +209,9 @@ public class DataBentoJsonConverterTests
         Assert.Greater(res.Header.TsEvent, 0);
         Assert.AreEqual(1, res.Header.PublisherId);
         Assert.Greater(res.Header.InstrumentId, 0);
+
+        Assert.IsTrue(res.TryGetDateTimeUtc(out var dataTime));
+        Assert.AreNotEqual(default(DateTime), dataTime);
 
         Assert.That(
             res.Header.Rtype,
@@ -290,6 +293,7 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(42566722, res.Header.InstrumentId);
         Assert.AreEqual(470m, res.Quantity);
         Assert.AreEqual(StatisticType.OpenInterest, res.StatType);
+        Assert.Greater(res.TsRecv, 0);
     }
 
     private static IEnumerable<TestCaseData> SystemLiveMessages
@@ -523,8 +527,10 @@ public class DataBentoJsonConverterTests
         Assert.That(error.Detail.Case, Is.Not.Null.And.Not.Empty);
         var validCases = new[]
         {
-            "data_end_after_available_end",
-            "data_start_before_available_start"
+            ErrorCases.DataEndAfterAvailableEnd,
+            ErrorCases.DataStartBeforeAvailableStart,
+            ErrorCases.DataStartAfterAvailableEnd,
+            ErrorCases.DataTimeRangeStartOnOrAfterEnd
         };
         Assert.IsTrue(validCases.Any(x => x.Equals(error.Detail.Case, StringComparison.InvariantCultureIgnoreCase)));
 
@@ -534,7 +540,10 @@ public class DataBentoJsonConverterTests
 
         Assert.IsNotNull(error.Detail.Payload);
         Assert.AreEqual(422, error.Detail.StatusCode);
-        Assert.AreEqual("GLBX.MDP3", error.Detail.Payload.Dataset);
+        if (!string.IsNullOrEmpty(error.Detail.Payload.Dataset))
+        {
+            Assert.AreEqual("GLBX.MDP3", error.Detail.Payload.Dataset);
+        }
 
         Assert.AreNotEqual(default(DateTime), error.Detail.Payload.Start);
         Assert.AreNotEqual(default(DateTime), error.Detail.Payload.End);

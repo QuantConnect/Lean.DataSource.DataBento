@@ -21,11 +21,6 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 public sealed class LevelOneData : MarketDataBase
 {
     /// <summary>
-    /// The capture-server-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
-    /// </summary>
-    public ulong TsRecv { get; set; }
-
-    /// <summary>
     /// The event type or order book operation. Can be Add, Cancel, Modify, cleaR book, Trade, Fill, or None.
     /// </summary>
     public char Action { get; set; }

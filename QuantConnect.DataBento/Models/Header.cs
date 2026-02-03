@@ -42,9 +42,4 @@ public sealed class Header
     /// Internal instrument identifier for the symbol.
     /// </summary>
     public uint InstrumentId { get; set; }
-
-    /// <summary>
-    /// Event time converted to UTC <see cref="DateTime"/>.
-    /// </summary>
-    public DateTime UtcTime => Time.UnixNanosecondTimeStampToDateTime(TsEvent == ulong.MaxValue ? 0L : (long)TsEvent);
 }

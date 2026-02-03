@@ -14,10 +14,12 @@
  *
 */
 
+using NodaTime;
+using QuantConnect.Util;
 using QuantConnect.Data;
 using QuantConnect.Logging;
+using QuantConnect.Securities;
 using QuantConnect.Data.Market;
-using QuantConnect.Data.Consolidators;
 using QuantConnect.Lean.Engine.HistoricalData;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
@@ -44,6 +46,17 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     /// Indicates whether a DataBento dataset error has already been logged.
     /// </summary>
     private bool _dataBentoDatasetErrorFired;
+
+    /// <summary>
+    /// Provides access to exchange trading hours and time zone data
+    /// loaded from the market-hours database.
+    /// </summary>
+    private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
+
+    /// <summary>
+    /// Caches exchange time zones per symbol to avoid repeated lookups.
+    /// </summary>
+    private readonly Dictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = [];
 
     /// <summary>
     /// Gets the total number of data points emitted by this history provider
@@ -156,7 +169,12 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     {
         foreach (var oi in _historicalApiClient.GetOpenInterest(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
-            yield return new OpenInterest(oi.Header.UtcTime.ConvertFromUtc(request.DataTimeZone), request.Symbol, oi.Quantity);
+            if (!oi.TryGetDateTimeUtc(out var time))
+            {
+                continue;
+            }
+
+            yield return new OpenInterest(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, oi.Quantity);
         }
     }
 
@@ -165,7 +183,12 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
         var period = request.Resolution.ToTimeSpan();
         foreach (var b in _historicalApiClient.GetHistoricalOhlcvBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, request.Resolution, dataBentoDataSet))
         {
-            yield return new TradeBar(b.Header.UtcTime.ConvertFromUtc(request.DataTimeZone), request.Symbol, b.Open, b.High, b.Low, b.Close, b.Volume, period);
+            if (!b.TryGetDateTimeUtc(out var time))
+            {
+                continue;
+            }
+
+            yield return new TradeBar(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, b.Open, b.High, b.Low, b.Close, b.Volume, period);
         }
     }
 
@@ -178,57 +201,44 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
         {
             if (t.Price.HasValue)
             {
-                yield return new Tick(t.Header.UtcTime.ConvertFromUtc(request.DataTimeZone), request.Symbol, "", "", t.Size, t.Price.Value);
+                if (!t.TryGetDateTimeUtc(out var time))
+                {
+                    continue;
+                }
+
+                yield return new Tick(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, "", "", t.Size, t.Price.Value);
             }
         }
     }
 
     private IEnumerable<BaseData>? GetInterDayQuoteBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
-        using var consolidator = new QuoteBarConsolidator(request.Resolution.ToTimeSpan());
-
-        var consolidatedData = default(BaseData);
-        void OnConsolidated(object? _, QuoteBar bar)
+        foreach (var qb in LeanData.AggregateQuoteBars(GetIntraDayQuoteBars(request, Resolution.Minute, brokerageSymbol, dataBentoDataSet), request.Symbol, request.Resolution.ToTimeSpan()))
         {
-            consolidatedData = bar;
-        }
-        consolidator.DataConsolidated += OnConsolidated;
-
-        try
-        {
-            foreach (var data in GetIntraDayQuoteBars(request, Resolution.Minute, brokerageSymbol, dataBentoDataSet))
-            {
-                consolidator.Update(data);
-                if (consolidatedData != null)
-                {
-                    yield return consolidatedData;
-                    consolidatedData = null;
-                }
-            }
-        }
-        finally
-        {
-            consolidator.DataConsolidated -= OnConsolidated;
+            yield return qb;
         }
     }
 
     /// <summary>
     /// Gets the quote ticks that will potentially be aggregated for the specified history request
     /// </summary>
-    private IEnumerable<BaseData> GetIntraDayQuoteBars(HistoryRequest request, Resolution resolution, string brokerageSymbol, string dataBentoDataSet)
+    private IEnumerable<QuoteBar> GetIntraDayQuoteBars(HistoryRequest request, Resolution resolution, string brokerageSymbol, string dataBentoDataSet)
     {
         var period = resolution.ToTimeSpan();
         foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, resolution, dataBentoDataSet))
         {
-            var time = q.Header.UtcTime.ConvertFromUtc(request.DataTimeZone);
             var topLevel = q.Levels.Single();
-
             if (!topLevel.HasBidOrAskPrice())
             {
                 continue;
             }
 
-            var bar = new QuoteBar(time, request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
+            if (!q.TryGetDateTimeUtc(out var time))
+            {
+                continue;
+            }
+
+            var bar = new QuoteBar(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
 
             if (topLevel.BidPx.HasValue)
             {
@@ -238,7 +248,6 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
             if (topLevel.AskPx.HasValue)
             {
                 bar.UpdateAsk(topLevel.AskPx.Value, topLevel.AskSz);
-
             }
 
             yield return bar;
@@ -249,7 +258,6 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     {
         foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, Resolution.Tick, dataBentoDataSet))
         {
-            var time = q.Header.UtcTime.ConvertFromUtc(request.DataTimeZone);
             var topLevel = q.Levels.Single();
 
             if (!topLevel.HasBidOrAskPrice())
@@ -257,7 +265,40 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
                 continue;
             }
 
-            yield return new Tick(time, request.Symbol, topLevel.BidSz, topLevel.BidPx ?? 0m, topLevel.AskSz, topLevel.AskPx ?? 0m);
+            if (!q.TryGetDateTimeUtc(out var time))
+            {
+                continue;
+            }
+
+            yield return new Tick(ConvertUtcToExchangeTime(request.Symbol, time), request.Symbol, topLevel.BidSz, topLevel.BidPx ?? 0m, topLevel.AskSz, topLevel.AskPx ?? 0m);
         }
+    }
+
+    /// <summary>
+    /// Converts the given UTC time into the symbol security exchange time zone
+    /// </summary>
+    private DateTime ConvertUtcToExchangeTime(Symbol symbol, DateTime utcTime)
+    {
+        var exchangeTimeZone = default(DateTimeZone);
+        lock (_symbolExchangeTimeZones)
+        {
+            if (!_symbolExchangeTimeZones.TryGetValue(symbol, out exchangeTimeZone))
+            {
+                // read the exchange time zone from market-hours-database
+                if (_marketHoursDatabase.TryGetEntry(symbol.ID.Market, symbol, symbol.SecurityType, out var entry))
+                {
+                    exchangeTimeZone = entry.ExchangeHours.TimeZone;
+                }
+                // If there is no entry for the given Symbol, default to New York
+                else
+                {
+                    exchangeTimeZone = TimeZones.NewYork;
+                }
+
+                _symbolExchangeTimeZones.Add(symbol, exchangeTimeZone);
+            }
+        }
+
+        return utcTime.ConvertFromUtc(exchangeTimeZone);
     }
 }

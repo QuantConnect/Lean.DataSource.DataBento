@@ -141,7 +141,10 @@ public partial class DataBentoProvider : IDataQueueHandler
     {
         if (_subscribedSymbolsByDataBentoInstrumentId.TryGetValue(levelOneData.Header.InstrumentId, out var symbol))
         {
-            var time = levelOneData.Header.UtcTime;
+            if (levelOneData.TryGetDateTimeUtc(out var time))
+            {
+                return;
+            }
 
             _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
 
