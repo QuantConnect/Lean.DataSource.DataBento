@@ -26,9 +26,4 @@ public sealed class LevelOneData : LevelOneDataBase
     /// The event type or order book operation. Can be Add, Cancel, Modify, cleaR book, Trade, Fill, or None.
     /// </summary>
     public ActionType Action { get; set; }
-
-    /// <summary>
-    /// Book depth level affected by this update.
-    /// </summary>
-    public int Depth { get; set; }
 }

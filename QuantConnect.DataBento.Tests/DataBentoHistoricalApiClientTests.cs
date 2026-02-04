@@ -188,7 +188,6 @@ public class DataBentoHistoricalApiClientTests
             Assert.Greater(data.Price, 0m);
             Assert.Greater(data.Size, 0);
 
-            Assert.AreEqual(0, data.Depth);
             Assertions.AssertLevelOneBookLevel(data.LevelOne);
 
             var dataTime = data.Header.UtcDateTime.Value;

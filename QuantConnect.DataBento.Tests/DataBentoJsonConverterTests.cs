@@ -156,7 +156,6 @@ public class DataBentoJsonConverterTests
 
         Assert.IsNotNull(res);
         Assert.Greater(res.Flags, 0);
-        Assert.AreEqual(0, res.Depth);
 
         Assert.NotNull(res.Header);
         Assert.Greater(res.Header.TsEvent, 0);
@@ -459,7 +458,6 @@ public class DataBentoJsonConverterTests
         Assertions.AssertEnumIsDefined(mbp.Action, "Action");
         Assertions.AssertEnumIsDefined(mbp.Side, "Side");
 
-        Assert.AreEqual(0, mbp.Depth);
         Assert.AreEqual(2676.4m, mbp.Price);
         Assert.AreEqual(1, mbp.Size);
         Assert.AreEqual(Flags.Last, mbp.Flags);
