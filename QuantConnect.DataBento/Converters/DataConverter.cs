@@ -87,10 +87,12 @@ public class DataConverter : JsonConverter<MarketDataBase>
                 marketDataBase = new OpenHighLowCloseVolumeData();
                 break;
             case RecordType.MarketByPriceDepth1:
-                return ParseLevelOneData<LevelOneData>(jObject);
+                marketDataBase = new LevelOneData();
+                break;
             case RecordType.BBO1Second:
             case RecordType.BBO1Minute:
-                return ParseLevelOneData<BestBidOfferInterval>(jObject);
+                marketDataBase = new BestBidOfferInterval();
+                break;
             case RecordType.SymbolMapping:
                 marketDataBase = new SymbolMappingMessage();
                 break;
@@ -107,23 +109,13 @@ public class DataConverter : JsonConverter<MarketDataBase>
         }
 
         _snakeSerializer.Populate(jObject.CreateReader(), marketDataBase);
-        return marketDataBase;
-    }
 
-    private LevelOneDataBase ParseLevelOneData<T>(JObject jObject) where T : LevelOneDataBase, new()
-    {
-        if (jObject["levels"] is not JArray levels || levels.Count > 1)
+        if (marketDataBase is LevelOneDataBase lodb)
         {
-            Log.Error($"{nameof(DataConverter)}.{nameof(ParseLevelOneData)}: More than one level found. JSON: {jObject.ToString(Formatting.None)}");
-            throw new ArgumentException("Only single level is supported in LevelOneData.", nameof(jObject));
+            lodb.LevelOne = jObject["levels"]?.First?.ToObject<LevelOneBookLevel>(_snakeSerializer);
         }
 
-        var levelOne = new T();
-        _snakeSerializer.Populate(jObject.CreateReader(), levelOne);
-
-        levelOne.LevelOne = levels.Single().ToObject<LevelOneBookLevel>(_snakeSerializer);
-
-        return levelOne;
+        return marketDataBase;
     }
 
     /// <summary>
