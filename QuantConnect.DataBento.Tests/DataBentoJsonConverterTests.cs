@@ -176,8 +176,8 @@ public class DataBentoJsonConverterTests
             $"Unexpected RecordType: {res.Header.Rtype}"
         );
 
-        Assert.IsTrue(Enum.IsDefined(res.Action), "Action must be one of ActionType");
-        Assert.IsTrue(char.IsLetter(res.Side), "Side must be a letter");
+        Assertions.AssertEnumIsDefined(res.Action, "Action");
+        Assertions.AssertEnumIsDefined(res.Side, "Side");
 
         if (res.Price is null)
         {
@@ -189,16 +189,10 @@ public class DataBentoJsonConverterTests
             Assert.Greater(res.Size, 0);
         }
 
-        Assert.IsNotNull(res.Levels);
-        Assert.AreEqual(1, res.Levels.Count);
-        var level = res.Levels[0];
-        AssertPositiveOrNull(level.BidPx);
-        AssertPositiveOrNull(level.AskPx);
-        Assert.GreaterOrEqual(level.BidSz, 0);
-        Assert.GreaterOrEqual(level.AskSz, 0);
-        Assert.GreaterOrEqual(level.BidCt, 0);
-        Assert.GreaterOrEqual(level.AskCt, 0);
+        Assertions.AssertLevelOneBookLevel(res.LevelOne);
     }
+
+
 
     private static IEnumerable<TestCaseData> HistoricalLevelOneData
     {
@@ -282,7 +276,8 @@ public class DataBentoJsonConverterTests
             $"Unexpected RecordType: {res.Header.Rtype}"
         );
 
-        Assert.IsTrue(char.IsLetter(res.Side), "Side must be a letter");
+        Assert.IsTrue(Enum.IsDefined(res.Side), "Side must be one of Side enum");
+
 
         if (res.Price is null)
         {
@@ -294,27 +289,7 @@ public class DataBentoJsonConverterTests
             Assert.Greater(res.Size, 0);
         }
 
-        Assert.IsNotNull(res.Levels);
-        Assert.AreEqual(1, res.Levels.Count);
-        var level = res.Levels[0];
-        AssertPositiveOrNull(level.BidPx);
-        AssertPositiveOrNull(level.AskPx);
-        Assert.GreaterOrEqual(level.BidSz, 0);
-        Assert.GreaterOrEqual(level.AskSz, 0);
-        Assert.GreaterOrEqual(level.BidCt, 0);
-        Assert.GreaterOrEqual(level.AskCt, 0);
-    }
-
-    private void AssertPositiveOrNull(decimal? price)
-    {
-        if (price.HasValue)
-        {
-            Assert.Greater(price.Value, 0);
-        }
-        else
-        {
-            Assert.IsNull(price);
-        }
+        Assertions.AssertLevelOneBookLevel(res.LevelOne);
     }
 
     [Test]
@@ -480,21 +455,16 @@ public class DataBentoJsonConverterTests
         Assert.IsInstanceOf<LevelOneData>(marketData);
 
         var mbp = marketData as LevelOneData;
-        Assert.AreEqual(ActionType.Add, mbp.Action);
-        Assert.AreEqual('A', mbp.Side);
+
+        Assertions.AssertEnumIsDefined(mbp.Action, "Action");
+        Assertions.AssertEnumIsDefined(mbp.Side, "Side");
+
         Assert.AreEqual(0, mbp.Depth);
         Assert.AreEqual(2676.4m, mbp.Price);
         Assert.AreEqual(1, mbp.Size);
-        Assert.AreEqual(128, mbp.Flags);
-        Assert.IsNotNull(mbp.Levels);
-        Assert.AreEqual(1, mbp.Levels.Count);
-        var level = mbp.Levels[0];
-        Assert.AreEqual(2676.3m, level.BidPx);
-        Assert.AreEqual(2676.4m, level.AskPx);
-        Assert.AreEqual(14, level.BidSz);
-        Assert.AreEqual(2, level.AskSz);
-        Assert.AreEqual(8, level.BidCt);
-        Assert.AreEqual(2, level.AskCt);
+        Assert.AreEqual(Flags.Last, mbp.Flags);
+
+        Assertions.AssertLevelOneBookLevel(mbp.LevelOne);
     }
 
     [Test]

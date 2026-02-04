@@ -216,8 +216,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
         var period = resolution.ToTimeSpan();
         foreach (var q in _historicalApiClient.GetBestBidOfferIntervals(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, resolution, dataBentoDataSet))
         {
-            var topLevel = q.Levels.Single();
-            if (!topLevel.HasBidOrAskPrice())
+            if (q.LevelOne == null || !q.LevelOne.HasBidOrAskPrice())
             {
                 continue;
             }
@@ -229,14 +228,14 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
 
             var bar = new QuoteBar(q.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
 
-            if (topLevel.BidPx.HasValue)
+            if (q.LevelOne.BidPx.HasValue)
             {
-                bar.UpdateBid(topLevel.BidPx.Value, topLevel.BidSz);
+                bar.UpdateBid(q.LevelOne.BidPx.Value, q.LevelOne.BidSz);
             }
 
-            if (topLevel.AskPx.HasValue)
+            if (q.LevelOne.AskPx.HasValue)
             {
-                bar.UpdateAsk(topLevel.AskPx.Value, topLevel.AskSz);
+                bar.UpdateAsk(q.LevelOne.AskPx.Value, q.LevelOne.AskSz);
             }
 
             yield return bar;
@@ -247,9 +246,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     {
         foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
-            var topLevel = q.Levels.Single();
-
-            if (!topLevel.HasBidOrAskPrice())
+            if (q.LevelOne == null || !q.LevelOne.HasBidOrAskPrice())
             {
                 continue;
             }
@@ -259,7 +256,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
                 continue;
             }
 
-            yield return new Tick(q.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, topLevel.BidSz, topLevel.BidPx ?? 0m, topLevel.AskSz, topLevel.AskPx ?? 0m);
+            yield return new Tick(q.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, q.LevelOne.BidSz, q.LevelOne.BidPx ?? 0m, q.LevelOne.AskSz, q.LevelOne.AskPx ?? 0m);
         }
     }
 }

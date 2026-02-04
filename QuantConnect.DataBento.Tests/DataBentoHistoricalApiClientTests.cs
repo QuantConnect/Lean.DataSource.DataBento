@@ -128,8 +128,18 @@ public class DataBentoHistoricalApiClientTests
         foreach (var data in _client.GetBestBidOfferIntervals(ticker, startDate, endDate, resolution, Dataset))
         {
             Assert.IsNotNull(data);
-            Assert.Greater(data.Price, 0m);
-            Assert.Greater(data.Size, 0);
+            if (data.Price.HasValue)
+            {
+                Assert.Greater(data.Price, 0m);
+                Assert.Greater(data.Size, 0);
+            }
+            else
+            {
+                Assert.IsNull(data.Price);
+                Assert.AreEqual(0, data.Size);
+            }
+
+            Assertions.AssertLevelOneBookLevel(data.LevelOne);
 
             var dateTime = data.UtcDateTime.Value;
             Assert.AreNotEqual(default(DateTime), dateTime);
@@ -177,6 +187,9 @@ public class DataBentoHistoricalApiClientTests
             Assert.IsNotNull(data);
             Assert.Greater(data.Price, 0m);
             Assert.Greater(data.Size, 0);
+
+            Assert.AreEqual(0, data.Depth);
+            Assertions.AssertLevelOneBookLevel(data.LevelOne);
 
             var dataTime = data.Header.UtcDateTime.Value;
             Assert.AreNotEqual(default(DateTime), dataTime);

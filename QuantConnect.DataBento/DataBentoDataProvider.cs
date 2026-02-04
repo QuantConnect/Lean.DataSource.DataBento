@@ -149,9 +149,15 @@ public partial class DataBentoProvider : IDataQueueHandler
 
             _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
 
-            foreach (var l in levelOneData.Levels)
+            if (levelOneData.LevelOne != null)
             {
-                _levelOneServiceManager.HandleQuote(symbol, time, l.BidPx, l.BidSz, l.AskPx, l.AskSz);
+                _levelOneServiceManager.HandleQuote(
+                    symbol,
+                    time,
+                    levelOneData.LevelOne.BidPx,
+                    levelOneData.LevelOne.BidSz,
+                    levelOneData.LevelOne.AskPx,
+                    levelOneData.LevelOne.AskSz);
             }
         }
     }
