@@ -186,7 +186,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     /// </summary>
     private IEnumerable<BaseData> GetTradeTicks(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
-        foreach (var t in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, Resolution.Tick, dataBentoDataSet))
+        foreach (var t in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
             if (t.Price.HasValue)
             {
@@ -214,7 +214,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
     private IEnumerable<QuoteBar> GetIntraDayQuoteBars(HistoryRequest request, Resolution resolution, string brokerageSymbol, string dataBentoDataSet)
     {
         var period = resolution.ToTimeSpan();
-        foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, resolution, dataBentoDataSet))
+        foreach (var q in _historicalApiClient.GetBestBidOfferIntervals(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, resolution, dataBentoDataSet))
         {
             var topLevel = q.Levels.Single();
             if (!topLevel.HasBidOrAskPrice())
@@ -245,7 +245,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
 
     private IEnumerable<BaseData> GetQuoteTicks(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
-        foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, Resolution.Tick, dataBentoDataSet))
+        foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
             var topLevel = q.Levels.Single();
 

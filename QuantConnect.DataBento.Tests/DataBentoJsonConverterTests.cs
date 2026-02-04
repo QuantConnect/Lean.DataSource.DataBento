@@ -59,7 +59,7 @@ public class DataBentoJsonConverterTests
         Assert.AreEqual(2L, res.Volume);
     }
 
-    private static IEnumerable<TestCaseData> HistoricalLevelOneData
+    private static IEnumerable<TestCaseData> LevelOneData
     {
         get
         {
@@ -90,6 +90,7 @@ public class DataBentoJsonConverterTests
         }
     ]
 }").SetArgDisplayNames("Normal");
+
             yield return new TestCaseData(@"{
     ""ts_recv"": ""1736722822572003465"",
     ""hd"": {
@@ -117,6 +118,7 @@ public class DataBentoJsonConverterTests
         }
     ]
 }").SetArgDisplayNames("BidPriceNull");
+
             yield return new TestCaseData(@"{
     ""ts_recv"": ""1736751414397721230"",
     ""hd"": {
@@ -144,6 +146,64 @@ public class DataBentoJsonConverterTests
         }
     ]
 }").SetArgDisplayNames("BidAndAskPriceNull");
+        }
+    }
+
+    [TestCaseSource(nameof(LevelOneData))]
+    public void DeserializeLiveOneData(string json)
+    {
+        var res = json.DeserializeObject<LevelOneData>();
+
+        Assert.IsNotNull(res);
+        Assert.Greater(res.Flags, 0);
+        Assert.AreEqual(0, res.Depth);
+
+        Assert.NotNull(res.Header);
+        Assert.Greater(res.Header.TsEvent, 0);
+        Assert.AreEqual(1, res.Header.PublisherId);
+        Assert.Greater(res.Header.InstrumentId, 0);
+
+        var dataTime = res.Header.UtcDateTime.Value;
+        Assert.AreNotEqual(default(DateTime), dataTime);
+
+        Assert.That(
+            res.Header.Rtype,
+            Is.AnyOf(
+                RecordType.MarketByPriceDepth1,
+                RecordType.BBO1Second,
+                RecordType.BBO1Minute
+            ),
+            $"Unexpected RecordType: {res.Header.Rtype}"
+        );
+
+        Assert.IsTrue(Enum.IsDefined(res.Action), "Action must be one of ActionType");
+        Assert.IsTrue(char.IsLetter(res.Side), "Side must be a letter");
+
+        if (res.Price is null)
+        {
+            Assert.AreEqual(0, res.Size);
+        }
+        else
+        {
+            Assert.Greater(res.Price, 0);
+            Assert.Greater(res.Size, 0);
+        }
+
+        Assert.IsNotNull(res.Levels);
+        Assert.AreEqual(1, res.Levels.Count);
+        var level = res.Levels[0];
+        AssertPositiveOrNull(level.BidPx);
+        AssertPositiveOrNull(level.AskPx);
+        Assert.GreaterOrEqual(level.BidSz, 0);
+        Assert.GreaterOrEqual(level.AskSz, 0);
+        Assert.GreaterOrEqual(level.BidCt, 0);
+        Assert.GreaterOrEqual(level.AskCt, 0);
+    }
+
+    private static IEnumerable<TestCaseData> HistoricalLevelOneData
+    {
+        get
+        {
             yield return new TestCaseData(@"{
     ""ts_recv"": ""1768137120000000000"",
     ""hd"": {
@@ -169,41 +229,40 @@ public class DataBentoJsonConverterTests
     ]
 }").SetArgDisplayNames("BBO1Minute.hd.ts_event == ulong MaxValue");
             yield return new TestCaseData(@"{
-    ""ts_recv"": ""1768137120000000000"",
-    ""hd"": {
-        ""ts_event"": ""18446744073709551615"",
-        ""rtype"": 196,
-        ""publisher_id"": 1,
-        ""instrument_id"": 42140878
-    },
-    ""side"": ""N"",
-    ""price"": null,
-    ""size"": 0,
-    ""flags"": 128,
-    ""sequence"": 811,
-    ""levels"": [
-        {
-            ""bid_px"": ""7004.000000000"",
-            ""ask_px"": ""7004.250000000"",
-            ""bid_sz"": 11,
-            ""ask_sz"": 15,
-            ""bid_ct"": 1,
-            ""ask_ct"": 1
-        }
-    ]
-}").SetArgDisplayNames("BBO1Minute_PriceNull");
+        ""ts_recv"": ""1768137120000000000"",
+        ""hd"": {
+            ""ts_event"": ""18446744073709551615"",
+            ""rtype"": 196,
+            ""publisher_id"": 1,
+            ""instrument_id"": 42140878
+        },
+        ""side"": ""N"",
+        ""price"": null,
+        ""size"": 0,
+        ""flags"": 128,
+        ""sequence"": 811,
+        ""levels"": [
+            {
+                ""bid_px"": ""7004.000000000"",
+                ""ask_px"": ""7004.250000000"",
+                ""bid_sz"": 11,
+                ""ask_sz"": 15,
+                ""bid_ct"": 1,
+                ""ask_ct"": 1
+            }
+        ]
+    }").SetArgDisplayNames("BBO1Minute_PriceNull");
         }
     }
 
     [TestCaseSource(nameof(HistoricalLevelOneData))]
-    public void DeserializeHistoricalLevelOneData(string json)
+    public void DeserializeHistoricalBestBidOfferIntervalData(string json)
     {
-        var res = json.DeserializeObject<LevelOneData>();
+        var res = json.DeserializeObject<BestBidOfferInterval>();
 
         Assert.IsNotNull(res);
         Assert.Greater(res.TsRecv, 0);
         Assert.Greater(res.Flags, 0);
-        Assert.AreEqual(0, res.Depth);
 
         Assert.NotNull(res.Header);
         Assert.Greater(res.Header.TsEvent, 0);
@@ -223,8 +282,6 @@ public class DataBentoJsonConverterTests
             $"Unexpected RecordType: {res.Header.Rtype}"
         );
 
-        if (res.Action != default)
-            Assert.IsTrue(char.IsLetter(res.Action), "Action must be a letter");
         Assert.IsTrue(char.IsLetter(res.Side), "Side must be a letter");
 
         if (res.Price is null)
@@ -423,7 +480,7 @@ public class DataBentoJsonConverterTests
         Assert.IsInstanceOf<LevelOneData>(marketData);
 
         var mbp = marketData as LevelOneData;
-        Assert.AreEqual('A', mbp.Action);
+        Assert.AreEqual(ActionType.Add, mbp.Action);
         Assert.AreEqual('A', mbp.Side);
         Assert.AreEqual(0, mbp.Depth);
         Assert.AreEqual(2676.4m, mbp.Price);

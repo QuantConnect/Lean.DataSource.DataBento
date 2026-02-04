@@ -125,7 +125,7 @@ public class DataBentoHistoricalApiClientTests
     {
         var dataCounter = 0;
         var previousEndTime = DateTime.MinValue;
-        foreach (var data in _client.GetLevelOneData(ticker, startDate, endDate, resolution, Dataset))
+        foreach (var data in _client.GetBestBidOfferIntervals(ticker, startDate, endDate, resolution, Dataset))
         {
             Assert.IsNotNull(data);
             Assert.Greater(data.Price, 0m);
@@ -172,7 +172,7 @@ public class DataBentoHistoricalApiClientTests
     {
         var dataCounter = 0;
         var previousEndTime = DateTime.MinValue;
-        foreach (var data in _client.GetLevelOneData(ticker, startDate, endDate, resolution, Dataset))
+        foreach (var data in _client.GetLevelOneData(ticker, startDate, endDate, Dataset))
         {
             Assert.IsNotNull(data);
             Assert.Greater(data.Price, 0m);

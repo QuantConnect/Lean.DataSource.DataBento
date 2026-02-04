@@ -87,9 +87,11 @@ public class DataConverter : JsonConverter<MarketDataBase>
                 marketDataBase = new OpenHighLowCloseVolumeData();
                 break;
             case RecordType.MarketByPriceDepth1:
+                marketDataBase = new LevelOneData();
+                break;
             case RecordType.BBO1Second:
             case RecordType.BBO1Minute:
-                marketDataBase = new LevelOneData();
+                marketDataBase = new BestBidOfferInterval();
                 break;
             case RecordType.SymbolMapping:
                 marketDataBase = new SymbolMappingMessage();

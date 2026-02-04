@@ -115,14 +115,16 @@ public class HistoricalAPIClient : IDisposable
         return GetRange<OpenHighLowCloseVolumeData>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
     }
 
-    public IEnumerable<LevelOneData> GetLevelOneData(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
+    public IEnumerable<LevelOneData> GetLevelOneData(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
+    {
+        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, MBP1Schema, dataSet);
+    }
+
+    public IEnumerable<BestBidOfferInterval> GetBestBidOfferIntervals(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
     {
         var schema = default(string);
         switch (resolution)
         {
-            case Resolution.Tick:
-                schema = MBP1Schema;
-                break;
             case Resolution.Second:
                 schema = BBO1sSchema;
                 break;
@@ -130,9 +132,9 @@ public class HistoricalAPIClient : IDisposable
                 schema = BBO1mSchema;
                 break;
             default:
-                throw new ArgumentException($"Unsupported resolution {resolution} in GetLevelOneData.");
+                throw new ArgumentException($"Unsupported resolution {resolution} in GetBestBidOfferIntervals.");
         }
-        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
+        return GetRange<BestBidOfferInterval>(symbol, startDateTimeUtc, endDateTimeUtc, schema, dataSet);
     }
 
     public IEnumerable<StatisticsData> GetOpenInterest(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
@@ -266,7 +268,7 @@ public class HistoricalAPIClient : IDisposable
             // Advance start by one tick to move the time window forward without duplication.
             // The API range is inclusive, so this ensures the next request starts
             // strictly after the last emitted record and avoids re-fetching it.
-            var lastEmittedTime = (lastEmitted as LevelOneData)?.UtcDateTime ?? lastEmitted?.Header.UtcDateTime;
+            var lastEmittedTime = (lastEmitted as BestBidOfferInterval)?.UtcDateTime ?? lastEmitted?.Header.UtcDateTime;
             if (!lastEmittedTime.HasValue)
             {
                 LogDetailError("AdvanceStartByOneTick", line, response, formData);
