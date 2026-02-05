@@ -18,6 +18,7 @@ using QuantConnect.Util;
 using QuantConnect.Logging;
 using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
+using QuantConnect.Lean.DataSource.DataBento.Exceptions;
 using QuantConnect.Lean.DataSource.DataBento.Models.Events;
 using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
@@ -130,8 +131,9 @@ public sealed class LiveAPIClient : IDisposable
                 break;
             case ErrorMessage error:
                 // Terminate connection
-                Log.Error($"LiveAPIClient.{nameof(MessageReceived)}.Error: {error}");
-                break;
+                // TODO: Task swallows the exception thrown
+                Log.Error($"LiveAPIClient.{nameof(MessageReceived)} {error}");
+                throw new LiveApiErrorException(error);
             default:
                 Log.Error($"LiveAPIClient.{nameof(MessageReceived)}: Received unsupported record type: {data.Header.Rtype}. Message: {message}");
                 break;

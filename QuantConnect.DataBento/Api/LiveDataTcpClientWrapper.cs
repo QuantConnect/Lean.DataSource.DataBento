@@ -1,4 +1,4 @@
-﻿/*
+/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
  * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
@@ -19,6 +19,7 @@ using QuantConnect.Util;
 using System.Net.Sockets;
 using QuantConnect.Logging;
 using System.Security.Authentication;
+using QuantConnect.Lean.DataSource.DataBento.Exceptions;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Api;
@@ -168,6 +169,10 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             {
                 errorMessage = DataReceiver(ct);
             }
+            catch (LiveApiErrorException)
+            {
+                throw;
+            }
             finally
             {
                 if (!ct.IsCancellationRequested)
@@ -222,6 +227,10 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
         {
             errorMessage = ioex.Message;
             Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(DataReceiver)}.IOException: " + errorMessage);
+        }
+        catch (LiveApiErrorException)
+        {
+            throw;
         }
         catch (Exception ex)
         {

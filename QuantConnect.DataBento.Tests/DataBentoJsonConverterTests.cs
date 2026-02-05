@@ -576,19 +576,21 @@ public class DataBentoJsonConverterTests
         Assert.AreNotEqual(default(DateTime), error.Detail.Payload.AvailableEnd);
     }
 
-    [Test]
-    public void DeserializeLiveErrorMessage()
+    private static IEnumerable<TestCaseData> LiveErrorMessages
     {
-        var json = @"{
-    ""hd"": {
-        ""ts_event"": ""1770233385390672645"",
-        ""rtype"": 21,
-        ""publisher_id"": 0,
-        ""instrument_id"": 0
-    },
-    ""err"": ""Snapshot subscription is not supported for schema mbp-1""
-}";
+        get
+        {
+            yield return new TestCaseData(@"{""hd"": {""ts_event"": ""1770233385390672645"",""rtype"": 21, ""publisher_id"": 0,""instrument_id"": 0},
+            ""err"": ""Snapshot subscription is not supported for schema mbp-1""}");
 
+            yield return new TestCaseData(@"{""hd"":{""ts_event"":""1770300046346132956"",""rtype"":21,""publisher_id"":0,""instrument_id"":0},
+            ""err"":""Failed to resolve symbol: RTYH666""}");
+        }
+    }
+
+    [TestCaseSource(nameof(LiveErrorMessages))]
+    public void DeserializeLiveErrorMessage(string json)
+    {
         var error = json.DeserializeObject<ErrorMessage>();
 
         Assert.AreEqual(RecordType.Error, error.Header.Rtype);
