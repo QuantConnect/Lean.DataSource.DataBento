@@ -45,7 +45,7 @@ public partial class DataBentoProvider : IDataQueueHandler
 {
     private HistoricalAPIClient _historicalApiClient;
 
-    private readonly DataBentoSymbolMapper _symbolMapper = new();
+    private static readonly DataBentoSymbolMapper _symbolMapper = new();
 
     private readonly ConcurrentDictionary<string, Symbol> _pendingSubscriptions = [];
 
@@ -179,7 +179,7 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// <summary>
     /// Logic to subscribe to the specified symbols
     /// </summary>
-    public bool Subscribe(IEnumerable<Symbol> symbols)
+    private bool Subscribe(IEnumerable<Symbol> symbols)
     {
         foreach (var symbol in symbols)
         {
@@ -201,7 +201,7 @@ public partial class DataBentoProvider : IDataQueueHandler
         return true;
     }
 
-    public bool Unsubscribe(IEnumerable<Symbol> symbols)
+    private bool Unsubscribe(IEnumerable<Symbol> symbols)
     {
         // Please note there is no unsubscribe method. Subscriptions end when the TCP connection closes.
 
@@ -228,6 +228,12 @@ public partial class DataBentoProvider : IDataQueueHandler
     /// <returns>returns true if Data Provider supports the specified symbol; otherwise false</returns>
     private static bool CanSubscribe(Symbol symbol)
     {
+        if (!_symbolMapper.DataBentoDataSetByLeanMarket.ContainsKey(symbol.ID.Market))
+        {
+            Log.Error($"No DataBento dataset mapping found for symbol {symbol} in market {symbol.ID.Market}. Cannot subscribe.");
+            return false;
+        }
+
         return !symbol.Value.Contains("universe", StringComparison.InvariantCultureIgnoreCase) &&
                !symbol.IsCanonical() &&
                 symbol.SecurityType == SecurityType.Future;
