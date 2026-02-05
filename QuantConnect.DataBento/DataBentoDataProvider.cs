@@ -28,6 +28,7 @@ using QuantConnect.Configuration;
 using System.Security.Cryptography;
 using System.Net.NetworkInformation;
 using System.Collections.Concurrent;
+using System.Security.Authentication;
 using QuantConnect.Brokerages.LevelOneOrderBook;
 using QuantConnect.Lean.DataSource.DataBento.Api;
 using QuantConnect.Lean.DataSource.DataBento.Models;
@@ -106,11 +107,15 @@ public partial class DataBentoProvider : IDataQueueHandler
             _aggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(aggregatorName, forceTypeNameOnExisting: false);
         }
 
+        _historicalApiClient = new(apiKey);
+        if (!_historicalApiClient.IsValidApiKey())
+        {
+            throw new AuthenticationException($"Invalid API key. Please verify your key at: https://databento.com/docs/portal/api-keys");
+        }
+
         _liveApiClient = new LiveAPIClient(apiKey, HandleLevelOneData);
         _liveApiClient.SymbolMappingConfirmation += OnSymbolMappingConfirmation;
         _liveApiClient.ConnectionLost += OnConnectionLost;
-
-        _historicalApiClient = new(apiKey);
 
         _levelOneServiceManager = new LevelOneServiceManager(
             _aggregator,

@@ -91,6 +91,19 @@ public class HistoricalAPIClient : IDisposable
             );
     }
 
+    /// <summary>
+    /// Checks if the API key is valid by making a test request to the metadata endpoint.
+    /// </summary>
+    /// <returns>
+    /// <c>true</c> if the API key is valid; otherwise, <c>false</c>.
+    /// </returns>
+    public bool IsValidApiKey()
+    {
+        using var requestMessage = new HttpRequestMessage(HttpMethod.Get, "/v0/metadata.list_publishers");
+        using var response = _httpClient.Send(requestMessage);
+        return response.StatusCode != HttpStatusCode.Unauthorized;
+    }
+
     public IEnumerable<OpenHighLowCloseVolumeData> GetHistoricalOhlcvBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
     {
         string schema;

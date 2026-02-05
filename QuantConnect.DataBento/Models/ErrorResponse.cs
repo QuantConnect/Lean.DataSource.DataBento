@@ -112,4 +112,9 @@ public static class ErrorCases
     /// The requested start timestamp is greater than or equal to the requested end timestamp.
     /// </summary>
     public const string DataTimeRangeStartOnOrAfterEnd = "data_time_range_start_on_or_after_end";
+
+    /// <summary>
+    /// The authentication process failed due to invalid credentials.
+    /// </summary>
+    public const string AuthAuthenticationFailed = "auth_authentication_failed";
 }

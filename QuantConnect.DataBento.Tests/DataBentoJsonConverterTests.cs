@@ -538,6 +538,16 @@ public class DataBentoJsonConverterTests
         }
     }
 }").SetArgDisplayNames("DataStartAfterAvailableEnd");
+
+            yield return new TestCaseData(@"{
+    ""detail"": {
+        ""case"": ""auth_authentication_failed"",
+        ""message"": ""Authentication failed."",
+        ""status_code"": 401,
+        ""docs"": ""https://databento.com/docs/portal/api-keys"",
+        ""payload"": null
+    }
+}").SetArgDisplayNames("AuthAuthenticationFailed");
         }
     }
 
@@ -554,13 +564,20 @@ public class DataBentoJsonConverterTests
             ErrorCases.DataEndAfterAvailableEnd,
             ErrorCases.DataStartBeforeAvailableStart,
             ErrorCases.DataStartAfterAvailableEnd,
-            ErrorCases.DataTimeRangeStartOnOrAfterEnd
+            ErrorCases.DataTimeRangeStartOnOrAfterEnd,
+            ErrorCases.AuthAuthenticationFailed
         };
         Assert.IsTrue(validCases.Any(x => x.Equals(error.Detail.Case, StringComparison.InvariantCultureIgnoreCase)));
 
         Assert.That(error.Detail.Message, Is.Not.Null.And.Not.Empty);
         Assert.Greater(error.Detail.StatusCode, 0);
         Assert.That(error.Detail.Docs, Is.Not.Null.And.Not.Empty);
+
+        if (error.Detail.Case.Equals(ErrorCases.AuthAuthenticationFailed, StringComparison.InvariantCultureIgnoreCase))
+        {
+            Assert.IsNull(error.Detail.Payload);
+            return;
+        }
 
         Assert.IsNotNull(error.Detail.Payload);
         Assert.AreEqual(422, error.Detail.StatusCode);
