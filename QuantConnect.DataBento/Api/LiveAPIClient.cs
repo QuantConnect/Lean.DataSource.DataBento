@@ -32,6 +32,15 @@ public sealed class LiveAPIClient : IDisposable
 
     private readonly Action<LevelOneData> _levelOneDataHandler;
 
+    /// <summary>
+    /// A set of system messages that should be ignored by the message handler.
+    /// </summary>
+    private static readonly HashSet<string> IgnoredMessages = new(StringComparer.InvariantCultureIgnoreCase)
+    {
+        "Heartbeat",
+        "Subscription request for mbp-1 data succeeded"
+    };
+
     public event EventHandler<SymbolMappingConfirmationEventArgs>? SymbolMappingConfirmation;
 
     public event EventHandler<ConnectionLostEventArgs>? ConnectionLost;
@@ -127,7 +136,7 @@ public sealed class LiveAPIClient : IDisposable
                 }
                 _levelOneDataHandler?.Invoke(lod);
                 break;
-            case SystemMessage sm when sm.Msg.Equals("Heartbeat"):
+            case SystemMessage sm when IgnoredMessages.Contains(sm.Msg):
                 break;
             case ErrorMessage error:
                 // Terminate connection

@@ -22,9 +22,4 @@ public class SymbolMappingMessage : MarketDataBase
     /// The input symbol from the subscription
     /// </summary>
     public string? StypeInSymbol { get; set; }
-
-    /// <summary>
-    /// The output symbol from the subscription
-    /// </summary>
-    public string? StypeOutSymbol { get; set; }
 }

@@ -50,6 +50,7 @@ public partial class DataBentoProvider : IDataQueueHandler
     private readonly ConcurrentDictionary<string, Symbol> _pendingSubscriptions = [];
 
     private readonly Dictionary<uint, Symbol> _subscribedSymbolsByDataBentoInstrumentId = [];
+    private readonly Lock _subscribedSymbolLock = new();
 
     /// <summary>
     /// Manages Level 1 market data subscriptions and routing of updates to the shared <see cref="IDataAggregator"/>.
@@ -132,7 +133,12 @@ public partial class DataBentoProvider : IDataQueueHandler
 
     private void OnSymbolMappingConfirmation(object? _, SymbolMappingConfirmationEventArgs smce)
     {
-        if (_pendingSubscriptions.TryRemove(smce.Symbol, out var symbol))
+        if (!_pendingSubscriptions.TryRemove(smce.Symbol, out var symbol))
+        {
+            return;
+        }
+
+        lock (_subscribedSymbolLock)
         {
             _subscribedSymbolsByDataBentoInstrumentId[smce.InstrumentId] = symbol;
         }
@@ -140,28 +146,33 @@ public partial class DataBentoProvider : IDataQueueHandler
 
     private void HandleLevelOneData(LevelOneData levelOneData)
     {
-        if (_subscribedSymbolsByDataBentoInstrumentId.TryGetValue(levelOneData.Header.InstrumentId, out var symbol))
+        var symbol = default(Symbol);
+        lock (_subscribedSymbolLock)
         {
-            var time = levelOneData.Header.UtcDateTime;
-
-            switch (levelOneData.Action)
+            if (!_subscribedSymbolsByDataBentoInstrumentId.TryGetValue(levelOneData.Header.InstrumentId, out symbol))
             {
-                // Trade event: this record is the trade; bid/ask are pre-trade/snapshot
-                case ActionType.Trade:
-                    _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
-                    break;
-                case ActionType.Add:
-                case ActionType.Modify:
-                case ActionType.Cancel:
-                    _levelOneServiceManager.HandleQuote(
-                        symbol,
-                        time,
-                        levelOneData.LevelOne.BidPx,
-                        levelOneData.LevelOne.BidSz,
-                        levelOneData.LevelOne.AskPx,
-                        levelOneData.LevelOne.AskSz);
-                    break;
+                return;
             }
+        }
+        var time = levelOneData.Header.UtcDateTime;
+
+        switch (levelOneData.Action)
+        {
+            // Trade event: this record is the trade; bid/ask are pre-trade/snapshot
+            case ActionType.Trade:
+                _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
+                break;
+            case ActionType.Add:
+            case ActionType.Modify:
+            case ActionType.Cancel:
+                _levelOneServiceManager.HandleQuote(
+                    symbol,
+                    time,
+                    levelOneData.LevelOne.BidPx,
+                    levelOneData.LevelOne.BidSz,
+                    levelOneData.LevelOne.AskPx,
+                    levelOneData.LevelOne.AskSz);
+                break;
         }
     }
 
@@ -179,8 +190,11 @@ public partial class DataBentoProvider : IDataQueueHandler
 
             var brokerageSymbol = _symbolMapper.GetBrokerageSymbol(symbol);
 
-            _pendingSubscriptions[brokerageSymbol] = symbol;
-
+            if (!_pendingSubscriptions.TryAdd(brokerageSymbol, symbol))
+            {
+                throw new InvalidOperationException($"Subscription for '{brokerageSymbol}' is already pending.");
+            }
+            
             _liveApiClient.Subscribe(dataSetSpecifications.DataSetID, brokerageSymbol);
         }
 
@@ -193,11 +207,14 @@ public partial class DataBentoProvider : IDataQueueHandler
 
         var symbolsToRemove = symbols.ToHashSet();
 
-        foreach (var (instrumentId, symbol) in _subscribedSymbolsByDataBentoInstrumentId)
+        lock (_subscribedSymbolLock)
         {
-            if (symbolsToRemove.Contains(symbol))
+            foreach (var (instrumentId, symbol) in _subscribedSymbolsByDataBentoInstrumentId)
             {
-                _subscribedSymbolsByDataBentoInstrumentId.Remove(instrumentId);
+                if (symbolsToRemove.Contains(symbol))
+                {
+                    _subscribedSymbolsByDataBentoInstrumentId.Remove(instrumentId);
+                }
             }
         }
 

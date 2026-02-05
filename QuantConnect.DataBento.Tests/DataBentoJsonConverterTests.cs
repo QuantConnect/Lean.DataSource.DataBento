@@ -408,7 +408,6 @@ public class DataBentoJsonConverterTests
         var sm = marketData as SymbolMappingMessage;
 
         Assert.AreEqual("ESH6", sm.StypeInSymbol);
-        Assert.AreEqual("ESH6", sm.StypeOutSymbol);
     }
 
 
