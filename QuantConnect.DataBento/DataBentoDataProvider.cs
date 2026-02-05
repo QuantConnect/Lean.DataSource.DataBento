@@ -32,6 +32,7 @@ using QuantConnect.Brokerages.LevelOneOrderBook;
 using QuantConnect.Lean.DataSource.DataBento.Api;
 using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Models.Events;
+using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
 namespace QuantConnect.Lean.DataSource.DataBento;
 
@@ -142,22 +143,24 @@ public partial class DataBentoProvider : IDataQueueHandler
         if (_subscribedSymbolsByDataBentoInstrumentId.TryGetValue(levelOneData.Header.InstrumentId, out var symbol))
         {
             var time = levelOneData.Header.UtcDateTime;
-            if (time == null)
-            {
-                return;
-            }
 
-            _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
-
-            if (levelOneData.LevelOne != null)
+            switch (levelOneData.Action)
             {
-                _levelOneServiceManager.HandleQuote(
-                    symbol,
-                    time,
-                    levelOneData.LevelOne.BidPx,
-                    levelOneData.LevelOne.BidSz,
-                    levelOneData.LevelOne.AskPx,
-                    levelOneData.LevelOne.AskSz);
+                // Trade event: this record is the trade; bid/ask are pre-trade/snapshot
+                case ActionType.Trade:
+                    _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
+                    break;
+                case ActionType.Add:
+                case ActionType.Modify:
+                case ActionType.Cancel:
+                    _levelOneServiceManager.HandleQuote(
+                        symbol,
+                        time,
+                        levelOneData.LevelOne.BidPx,
+                        levelOneData.LevelOne.BidSz,
+                        levelOneData.LevelOne.AskPx,
+                        levelOneData.LevelOne.AskSz);
+                    break;
             }
         }
     }

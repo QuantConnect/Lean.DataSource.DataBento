@@ -19,6 +19,7 @@ using QuantConnect.Logging;
 using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 using QuantConnect.Lean.DataSource.DataBento.Models.Events;
+using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Api;
 
@@ -109,7 +110,27 @@ public sealed class LiveAPIClient : IDisposable
                 SymbolMappingConfirmation?.Invoke(this, new(smm.StypeInSymbol, smm.Header.InstrumentId));
                 break;
             case LevelOneData lod:
+                switch (lod.Action)
+                {
+                    case ActionType.Clear:
+                        // TODO: should we pass this action?
+                        // Clear('R') actions are when the order book is entirely cleared.
+                        // At the beginning of the week, the order book is completely reset for an instrument,
+                        // and you will see an Clear('R') record for it.
+                        // You will very likely not see this during the week.
+                        Log.Trace($"LiveAPIClient.{nameof(MessageReceived)}.Action.Clear: {message}");
+                        break;
+                    case ActionType.None:
+                        Log.Trace($"LiveAPIClient.{nameof(MessageReceived)}.Action.None: {message}");
+                        break;
+                }
                 _levelOneDataHandler?.Invoke(lod);
+                break;
+            case SystemMessage sm when sm.Msg.Equals("Heartbeat"):
+                break;
+            case ErrorMessage error:
+                // Terminate connection
+                Log.Error($"LiveAPIClient.{nameof(MessageReceived)}.Error: {error}");
                 break;
             default:
                 Log.Error($"LiveAPIClient.{nameof(MessageReceived)}: Received unsupported record type: {data.Header.Rtype}. Message: {message}");

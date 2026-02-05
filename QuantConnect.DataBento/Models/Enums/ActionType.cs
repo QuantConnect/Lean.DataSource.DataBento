@@ -57,10 +57,4 @@ public enum ActionType
     /// </summary>
     [EnumMember(Value = "T")]
     Trade,
-
-    /// <summary>
-    /// A resting order was filled. Does not affect the book.
-    /// </summary>
-    [EnumMember(Value = "F")]
-    Fill,
 }

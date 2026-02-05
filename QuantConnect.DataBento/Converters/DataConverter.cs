@@ -102,6 +102,9 @@ public class DataConverter : JsonConverter<MarketDataBase>
             case RecordType.System:
                 marketDataBase = new SystemMessage();
                 break;
+            case RecordType.Error:
+                marketDataBase = new ErrorMessage();
+                break;
             default:
                 var msg = $"Unsupported RecordType '{recordType}'";
                 Log.Error($"{nameof(DataConverter)}.{nameof(ReadJson)}: {msg}. JSON: {jObject.ToString(Formatting.None)}.");

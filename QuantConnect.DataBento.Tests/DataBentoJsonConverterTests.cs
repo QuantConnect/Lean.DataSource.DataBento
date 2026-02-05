@@ -575,4 +575,23 @@ public class DataBentoJsonConverterTests
         Assert.AreNotEqual(default(DateTime), error.Detail.Payload.AvailableStart);
         Assert.AreNotEqual(default(DateTime), error.Detail.Payload.AvailableEnd);
     }
+
+    [Test]
+    public void DeserializeLiveErrorMessage()
+    {
+        var json = @"{
+    ""hd"": {
+        ""ts_event"": ""1770233385390672645"",
+        ""rtype"": 21,
+        ""publisher_id"": 0,
+        ""instrument_id"": 0
+    },
+    ""err"": ""Snapshot subscription is not supported for schema mbp-1""
+}";
+
+        var error = json.DeserializeObject<ErrorMessage>();
+
+        Assert.AreEqual(RecordType.Error, error.Header.Rtype);
+        Assert.IsNotEmpty(error.Error);
+    }
 }
