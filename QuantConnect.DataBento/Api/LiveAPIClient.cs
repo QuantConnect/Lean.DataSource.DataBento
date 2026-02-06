@@ -16,6 +16,7 @@
 
 using QuantConnect.Util;
 using QuantConnect.Logging;
+using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 using QuantConnect.Lean.DataSource.DataBento.Exceptions;
@@ -89,7 +90,18 @@ public sealed class LiveAPIClient : IDisposable
         if (!liveDataTcpClient.IsConnected)
         {
             var msg = $"Unable to establish a connection to the DataBento Live API (Dataset: {dataSet}).";
-            Log.Error($"LiveAPIClient.{nameof(EnsureDatasetConnection)}: " + msg);
+
+            // TODO: remove after resolving https://github.com/QuantConnect/Lean/issues/9272
+            var resultHandler = Composer.Instance.GetPart<IResultHandler>();
+            if (resultHandler == null)
+            {
+                Log.Error($"LiveDataTcpClientWrapper[{dataSet}].{nameof(EnsureDatasetConnection)}: result handler is null");
+            }
+            else
+            {
+                resultHandler.RuntimeError(msg);
+            }
+
             throw new Exception(msg);
         }
 
@@ -140,8 +152,6 @@ public sealed class LiveAPIClient : IDisposable
                 break;
             case ErrorMessage error:
                 // Terminate connection
-                // TODO: Task swallows the exception thrown
-                Log.Error($"LiveAPIClient.{nameof(MessageReceived)} {error}");
                 throw new LiveApiErrorException(error);
             default:
                 Log.Error($"LiveAPIClient.{nameof(MessageReceived)}: Received unsupported record type: {data.Header.Rtype}. Message: {message}");

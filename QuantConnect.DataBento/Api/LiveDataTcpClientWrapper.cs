@@ -19,7 +19,6 @@ using QuantConnect.Util;
 using System.Net.Sockets;
 using QuantConnect.Logging;
 using System.Security.Authentication;
-using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.DataSource.DataBento.Exceptions;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
@@ -28,6 +27,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Api;
 public sealed class LiveDataTcpClientWrapper : IDisposable
 {
     private const int DefaultPort = 13000;
+    private const int MaxConnectionAttempts = 30;
 
     private readonly string _gateway;
     private readonly string _dataSet;
@@ -100,8 +100,14 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Connect)}: Connection attempt #{attemptToConnect} failed. Retrying in {retryDelayMs} ms. Error: {error}");
             _cancellationTokenSource.Token.WaitHandle.WaitOne(attemptToConnect * 2 * 1000);
 
-        } while (attemptToConnect++ < 30 && !IsConnected);
+        } while (attemptToConnect++ < MaxConnectionAttempts && !IsConnected);
         // 30 attempts => 15.5 min total retry delay (2s + 4s + 6s + ...).
+
+        if (attemptToConnect >= MaxConnectionAttempts)
+        {
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Connect)}: " +
+                $"Maximum retry limit ({MaxConnectionAttempts}) reached. Connection not established.");
+        }
     }
 
     /// <summary>
@@ -171,9 +177,9 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             {
                 errorMessage = DataReceiver(ct);
             }
-            catch (LiveApiErrorException)
+            catch (LiveApiErrorException e)
             {
-                // we have logged it and exit bellow
+                Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: {e.Message}");
                 break;
             }
             finally
@@ -192,24 +198,12 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: Exception while raising ConnectionLost: {ex.Message}");
+                    Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}.Event<ConnectionLost>.Raise.Exception: {ex.Message}");
                     break;
                 }
             }
         }
         Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: Stopping connection monitor loop");
-
-        if (!IsConnected)
-        {
-            var resultHandler = Composer.Instance.GetPart<IResultHandler>();
-            if (resultHandler == null)
-            {
-                Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: result handler is null");
-                return;
-            }
-
-            resultHandler.RuntimeError($"Unable to connect to {_dataSet} after several tries.");
-        }
     }
 
     /// <summary>
