@@ -99,7 +99,8 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Connect)}: Connection attempt #{attemptToConnect} failed. Retrying in {retryDelayMs} ms. Error: {error}");
             _cancellationTokenSource.Token.WaitHandle.WaitOne(attemptToConnect * 2 * 1000);
 
-        } while (attemptToConnect++ < 5 && !IsConnected);
+        } while (attemptToConnect++ < 30 && !IsConnected);
+        // 30 attempts => 15.5 min total retry delay (2s + 4s + 6s + ...).
     }
 
     /// <summary>
