@@ -19,6 +19,7 @@ using QuantConnect.Util;
 using System.Net.Sockets;
 using QuantConnect.Logging;
 using System.Security.Authentication;
+using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.DataSource.DataBento.Exceptions;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
@@ -172,7 +173,8 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             }
             catch (LiveApiErrorException)
             {
-                throw;
+                // we have logged it and exit bellow
+                break;
             }
             finally
             {
@@ -184,10 +186,30 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
             if (!ct.IsCancellationRequested)
             {
-                ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient?.Connected}"));
+                try
+                {
+                    ConnectionLost?.Invoke(this, new($"{errorMessage}. TcpConnected: {_tcpClient?.Connected}"));
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: Exception while raising ConnectionLost: {ex.Message}");
+                    break;
+                }
             }
         }
         Log.Trace($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: Stopping connection monitor loop");
+
+        if (!IsConnected)
+        {
+            var resultHandler = Composer.Instance.GetPart<IResultHandler>();
+            if (resultHandler == null)
+            {
+                Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: result handler is null");
+                return;
+            }
+
+            resultHandler.RuntimeError($"Unable to connect to {_dataSet} after several tries.");
+        }
     }
 
     /// <summary>
