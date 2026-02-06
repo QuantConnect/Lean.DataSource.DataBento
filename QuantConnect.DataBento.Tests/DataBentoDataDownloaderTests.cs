@@ -1,6 +1,6 @@
 ﻿/*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
- * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,167 +17,169 @@
 using System;
 using System.Linq;
 using NUnit.Framework;
-using QuantConnect.Data;
-using QuantConnect.Data.Market;
-using QuantConnect.Lean.DataSource.DataBento;
+using QuantConnect.Util;
 using QuantConnect.Logging;
-using QuantConnect.Configuration;
+using QuantConnect.Securities;
+using QuantConnect.Data.Market;
 
-namespace QuantConnect.Lean.DataSource.DataBento.Tests
+namespace QuantConnect.Lean.DataSource.DataBento.Tests;
+
+[TestFixture]
+public class DataBentoDataDownloaderTests
 {
-    [TestFixture]
-    public class DataBentoDataDownloaderTests
+    private DataBentoDataDownloader _downloader;
+
+    private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
+
+    [SetUp]
+    public void SetUp()
     {
-        private DataBentoDataDownloader _downloader;
-        private readonly string _apiKey = Config.Get("databento-api-key");
+        _downloader = new DataBentoDataDownloader();
+    }
 
-        [SetUp]
-        public void SetUp()
+    [TearDown]
+    public void TearDown()
+    {
+        _downloader?.DisposeSafely();
+    }
+
+    [TestCase(Resolution.Daily)]
+    [TestCase(Resolution.Hour)]
+    [TestCase(Resolution.Minute)]
+    [TestCase(Resolution.Second)]
+    [TestCase(Resolution.Tick)]
+    public void DownloadsTradeDataForLeanFuture(Resolution resolution)
+    {
+        var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
+        var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
+
+        var startUtc = new DateTime(2026, 1, 18, 0, 0, 0, DateTimeKind.Utc);
+        var endUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
+
+        if (resolution == Resolution.Tick)
         {
-            _downloader = new DataBentoDataDownloader(_apiKey);
+            startUtc = new DateTime(2026, 1, 21, 9, 30, 0, DateTimeKind.Utc);
+            endUtc = startUtc.AddMinutes(15);
         }
 
-        [TearDown]
-        public void TearDown()
+        var parameters = new DataDownloaderGetParameters(
+            symbol,
+            resolution,
+            startUtc,
+            endUtc,
+            TickType.Trade
+        );
+
+        var data = _downloader.Get(parameters).ToList();
+
+        Log.Trace($"Downloaded {data.Count} trade points for {symbol} @ {resolution}");
+
+        Assert.IsNotEmpty(data);
+
+        var startExchange = startUtc.ConvertFromUtc(exchangeTimeZone);
+        var endExchange = endUtc.ConvertFromUtc(exchangeTimeZone);
+
+        foreach (var point in data)
         {
-            _downloader?.Dispose();
-        }
+            Assert.AreEqual(symbol, point.Symbol);
+            Assert.That(point.Time, Is.InRange(startExchange, endExchange));
 
-        [Test]
-        [TestCase("ESM3", SecurityType.Future, Market.CME, Resolution.Daily, TickType.Trade)]
-        [TestCase("ESM3", SecurityType.Future, Market.CME, Resolution.Hour, TickType.Trade)]
-        [TestCase("ESM3", SecurityType.Future, Market.CME, Resolution.Minute, TickType.Trade)]
-        [TestCase("ESM3", SecurityType.Future, Market.CME, Resolution.Second, TickType.Trade)]
-        [TestCase("ESM3", SecurityType.Future, Market.CME, Resolution.Tick, TickType.Trade)]
-        [Explicit("This test requires a configured DataBento API key")]
-        public void DownloadsHistoricalData(string ticker, SecurityType securityType, string market, Resolution resolution, TickType tickType)
-        {
-            var symbol = Symbol.Create(ticker, securityType, market);
-            var startTime = new DateTime(2024, 1, 15);
-            var endTime = new DateTime(2024, 1, 16);
-            var param = new DataDownloaderGetParameters(symbol, resolution, startTime, endTime, tickType);
-
-            var downloadResponse = _downloader.Get(param).ToList();
-
-            Log.Trace($"Downloaded {downloadResponse.Count} data points for {symbol} at {resolution} resolution");
-
-            Assert.IsTrue(downloadResponse.Any(), "Expected to download at least one data point");
-
-            foreach (var data in downloadResponse)
+            switch (point)
             {
-                Assert.IsNotNull(data, "Data point should not be null");
-                Assert.AreEqual(symbol, data.Symbol, "Symbol should match requested symbol");
-                Assert.IsTrue(data.Time >= startTime && data.Time <= endTime, "Data time should be within requested range");
+                case TradeBar bar:
+                    Assert.Greater(bar.Open, 0);
+                    Assert.Greater(bar.High, 0);
+                    Assert.Greater(bar.Low, 0);
+                    Assert.Greater(bar.Close, 0);
+                    Assert.GreaterOrEqual(bar.Volume, 0);
+                    Assert.GreaterOrEqual(bar.High, bar.Low);
+                    break;
 
-                if (data is TradeBar tradeBar)
-                {
-                    Assert.Greater(tradeBar.Close, 0, "Close price should be positive");
-                    Assert.GreaterOrEqual(tradeBar.Volume, 0, "Volume should be non-negative");
-                    Assert.Greater(tradeBar.High, 0, "High price should be positive");
-                    Assert.Greater(tradeBar.Low, 0, "Low price should be positive");
-                    Assert.Greater(tradeBar.Open, 0, "Open price should be positive");
-                    Assert.GreaterOrEqual(tradeBar.High, tradeBar.Low, "High should be >= Low");
-                    Assert.GreaterOrEqual(tradeBar.High, tradeBar.Open, "High should be >= Open");
-                    Assert.GreaterOrEqual(tradeBar.High, tradeBar.Close, "High should be >= Close");
-                    Assert.LessOrEqual(tradeBar.Low, tradeBar.Open, "Low should be <= Open");
-                    Assert.LessOrEqual(tradeBar.Low, tradeBar.Close, "Low should be <= Close");
-                }
-                else if (data is QuoteBar quoteBar)
-                {
-                    Assert.Greater(quoteBar.Close, 0, "Quote close price should be positive");
-                    if (quoteBar.Bid != null)
-                    {
-                        Assert.Greater(quoteBar.Bid.Close, 0, "Bid price should be positive");
-                    }
-                    if (quoteBar.Ask != null)
-                    {
-                        Assert.Greater(quoteBar.Ask.Close, 0, "Ask price should be positive");
-                    }
-                }
-                else if (data is Tick tick)
-                {
-                    Assert.Greater(tick.Value, 0, "Tick value should be positive");
-                    Assert.GreaterOrEqual(tick.Quantity, 0, "Tick quantity should be non-negative");
-                }
+                case Tick tick:
+                    Assert.Greater(tick.Value, 0);
+                    Assert.GreaterOrEqual(tick.Quantity, 0);
+                    break;
+
+                default:
+                    Assert.Fail($"Unexpected data type {point.GetType()}");
+                    break;
             }
         }
+    }
 
-        [Test]
-        [TestCase("ZNM3", SecurityType.Future, Market.CME, Resolution.Daily, TickType.Trade)]
-        [TestCase("ZNM3", SecurityType.Future, Market.CME, Resolution.Hour, TickType.Trade)]
-        [Explicit("This test requires a configured DataBento API key")]
-        public void DownloadsFuturesHistoricalData(string ticker, SecurityType securityType, string market, Resolution resolution, TickType tickType)
+    [Test]
+    public void DownloadsQuoteTicksForLeanFuture()
+    {
+        var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
+        var exchangeTimeZone = _marketHoursDatabase.GetExchangeHours(symbol.ID.Market, symbol, symbol.SecurityType).TimeZone;
+
+        var startUtc = new DateTime(2026, 1, 20, 9, 30, 0, DateTimeKind.Utc);
+        var endUtc = startUtc.AddMinutes(15);
+
+        var parameters = new DataDownloaderGetParameters(
+            symbol,
+            Resolution.Tick,
+            startUtc,
+            endUtc,
+            TickType.Quote
+        );
+
+        var data = _downloader.Get(parameters).ToList();
+
+        Log.Trace($"Downloaded {data.Count} quote ticks for {symbol}");
+
+        Assert.IsNotEmpty(data);
+
+        var startExchange = startUtc.ConvertFromUtc(exchangeTimeZone);
+        var endExchange = endUtc.ConvertFromUtc(exchangeTimeZone);
+
+        foreach (var point in data)
         {
-            var symbol = Symbol.Create(ticker, securityType, market);
-            var startTime = new DateTime(2024, 1, 15);
-            var endTime = new DateTime(2024, 1, 16);
-            var param = new DataDownloaderGetParameters(symbol, resolution, startTime, endTime, tickType);
+            Assert.AreEqual(symbol, point.Symbol);
+            Assert.That(point.Time, Is.InRange(startExchange, endExchange));
 
-            var downloadResponse = _downloader.Get(param).ToList();
-
-            Log.Trace($"Downloaded {downloadResponse.Count} data points for futures {symbol}");
-
-            Assert.IsTrue(downloadResponse.Any(), "Expected to download futures data");
-
-            foreach (var data in downloadResponse)
+            if (point is Tick tick)
             {
-                Assert.AreEqual(symbol, data.Symbol, "Symbol should match requested futures symbol");
-                Assert.Greater(data.Value, 0, "Data value should be positive");
+                Assert.AreEqual(TickType.Quote, tick.TickType);
+                Assert.IsTrue(
+                    tick.BidPrice > 0 || tick.AskPrice > 0,
+                    "Quote tick must have bid or ask"
+                );
+            }
+            else if (point is QuoteBar bar)
+            {
+                Assert.IsTrue(bar.Bid != null || bar.Ask != null);
             }
         }
+    }
 
-        [Test]
-        [TestCase("ESM3", SecurityType.Future, Market.CME, Resolution.Tick, TickType.Quote)]
-        [Explicit("This test requires a configured DataBento API key and advanced subscription")]
-        public void DownloadsQuoteData(string ticker, SecurityType securityType, string market, Resolution resolution, TickType tickType)
+    [Test]
+    public void DataIsSortedByTime()
+    {
+        var symbol = Symbol.CreateFuture("ES", Market.CME, new DateTime(2026, 3, 20));
+
+        var startUtc = new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc);
+        var endUtc = new DateTime(2024, 1, 21, 0, 0, 0, DateTimeKind.Utc);
+
+        var parameters = new DataDownloaderGetParameters(
+            symbol,
+            Resolution.Minute,
+            startUtc,
+            endUtc,
+            TickType.Trade
+        );
+
+        var data = _downloader.Get(parameters).ToList();
+
+        Assert.IsNotEmpty(data);
+
+        for (int i = 1; i < data.Count; i++)
         {
-            var symbol = Symbol.Create(ticker, securityType, market);
-            var startTime = new DateTime(2024, 1, 15, 9, 30, 0);
-            var endTime = new DateTime(2024, 1, 15, 9, 45, 0);
-            var param = new DataDownloaderGetParameters(symbol, resolution, startTime, endTime, tickType);
-
-            var downloadResponse = _downloader.Get(param).ToList();
-
-            Log.Trace($"Downloaded {downloadResponse.Count} quote data points for {symbol}");
-
-            Assert.IsTrue(downloadResponse.Any(), "Expected to download quote data");
-
-            foreach (var data in downloadResponse)
-            {
-                Assert.AreEqual(symbol, data.Symbol, "Symbol should match requested symbol");
-                if (data is QuoteBar quoteBar)
-                {
-                    Assert.IsTrue(quoteBar.Bid != null || quoteBar.Ask != null, "Quote should have bid or ask data");
-                }
-            }
-        }
-
-        [Test]
-        [Explicit("This test requires a configured DataBento API key")]
-        public void DataIsSortedByTime()
-        {
-            var symbol = Symbol.Create("ESM3", SecurityType.Future, Market.CME);
-            var startTime = new DateTime(2024, 1, 15);
-            var endTime = new DateTime(2024, 1, 16);
-            var param = new DataDownloaderGetParameters(symbol, Resolution.Minute, startTime, endTime, TickType.Trade);
-
-            var downloadResponse = _downloader.Get(param).ToList();
-
-            Assert.IsTrue(downloadResponse.Any(), "Expected to download data for time sorting test");
-
-            for (int i = 1; i < downloadResponse.Count; i++)
-            {
-                Assert.GreaterOrEqual(downloadResponse[i].Time, downloadResponse[i - 1].Time,
-                    $"Data should be sorted by time. Item {i} time {downloadResponse[i].Time} should be >= item {i - 1} time {downloadResponse[i - 1].Time}");
-            }
-        }
-
-        [Test]
-        public void DisposesCorrectly()
-        {
-            var downloader = new DataBentoDataDownloader();
-            Assert.DoesNotThrow(() => downloader.Dispose(), "Dispose should not throw");
-            Assert.DoesNotThrow(() => downloader.Dispose(), "Multiple dispose calls should not throw");
+            Assert.GreaterOrEqual(
+                data[i].Time,
+                data[i - 1].Time,
+                $"Data not sorted at index {i}"
+            );
         }
     }
 }

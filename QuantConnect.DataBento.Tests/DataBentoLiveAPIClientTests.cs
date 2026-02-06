@@ -1,0 +1,96 @@
+﻿/*
+ * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+*/
+
+using System;
+using NUnit.Framework;
+using System.Threading;
+using QuantConnect.Util;
+using QuantConnect.Configuration;
+using System.Collections.Generic;
+using QuantConnect.Lean.DataSource.DataBento.Api;
+using QuantConnect.Lean.DataSource.DataBento.Models.Events;
+
+namespace QuantConnect.Lean.DataSource.DataBento.Tests;
+
+[TestFixture]
+public class DataBentoLiveAPIClientTests
+{
+    /// <summary>
+    /// Dataset for CME Globex futures
+    /// https://databento.com/docs/venues-and-datasets has more information on datasets through DataBento
+    /// </summary>
+    /// <remarks>
+    /// TODO: Hard coded for now. Later on can add equities and options with different mapping
+    /// </remarks>
+    private const string Dataset = "GLBX.MDP3";
+
+    private LiveAPIClient _live;
+
+    [OneTimeSetUp]
+    public void OneTimeSetUp()
+    {
+        var apiKey = Config.Get("databento-api-key");
+        if (string.IsNullOrEmpty(apiKey))
+        {
+            Assert.Inconclusive("Please set the 'databento-api-key' in your configuration to enable these tests.");
+        }
+
+        _live = new LiveAPIClient(apiKey, null);
+    }
+
+    [OneTimeTearDown]
+    public void OneTimeTearDown()
+    {
+        _live?.DisposeSafely();
+    }
+
+    [Test]
+    public void ShouldReceiveSymbolMappingConfirmation()
+    {
+        var dataAvailableEvent = new AutoResetEvent(false);
+
+        var subs = new Dictionary<string, uint>()
+        {
+            { Securities.Futures.Indices.SP500EMini + "H6", 0 },
+            { Securities.Futures.Indices.Russell2000EMini + "H6", 0 }
+        };
+
+        void OnSymbolMappingConfirmation(object sender, SymbolMappingConfirmationEventArgs e)
+        {
+            if (subs.ContainsKey(e.Symbol))
+            {
+                subs[e.Symbol] = e.InstrumentId;
+                dataAvailableEvent.Set();
+            }
+        }
+
+        _live.SymbolMappingConfirmation += OnSymbolMappingConfirmation;
+
+        foreach (var s in subs.Keys)
+        {
+            _live.Subscribe(Dataset, s);
+            dataAvailableEvent.WaitOne(TimeSpan.FromSeconds(5));
+        }
+
+        dataAvailableEvent.WaitOne(TimeSpan.FromSeconds(1));
+
+        foreach (var instrumentId in subs.Values)
+        {
+            Assert.Greater(instrumentId, 0);
+        }
+
+        _live.SymbolMappingConfirmation -= OnSymbolMappingConfirmation;
+    }
+}

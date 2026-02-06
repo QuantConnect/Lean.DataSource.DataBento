@@ -1,6 +1,6 @@
 /*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
- * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,403 +14,433 @@
  *
 */
 
-using System;
-using System.Linq;
-using NodaTime;
-using QuantConnect.Data;
-using QuantConnect.Data.Market;
+using System.Net;
+using System.Text;
+using Newtonsoft.Json;
+using QuantConnect.Api;
 using QuantConnect.Util;
-using QuantConnect.Interfaces;
-using System.Collections.Generic;
-using QuantConnect.Configuration;
+using QuantConnect.Data;
+using Newtonsoft.Json.Linq;
 using QuantConnect.Logging;
 using QuantConnect.Packets;
-using QuantConnect.Securities;
+using QuantConnect.Interfaces;
+using QuantConnect.Configuration;
+using System.Security.Cryptography;
+using System.Net.NetworkInformation;
 using System.Collections.Concurrent;
+using System.Security.Authentication;
+using QuantConnect.Brokerages.LevelOneOrderBook;
+using QuantConnect.Lean.DataSource.DataBento.Api;
+using QuantConnect.Lean.DataSource.DataBento.Models;
+using QuantConnect.Lean.DataSource.DataBento.Models.Events;
+using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
-namespace QuantConnect.Lean.DataSource.DataBento
+namespace QuantConnect.Lean.DataSource.DataBento;
+
+/// <summary>
+/// A data Provider for DataBento that provides live market data and historical data.
+/// Handles Subscribing, Unsubscribing, and fetching historical data from DataBento.
+/// It will handle if a symbol is subscribable and will log errors if it is not.
+/// </summary>
+public partial class DataBentoProvider : IDataQueueHandler
 {
+    private HistoricalAPIClient _historicalApiClient;
+
+    private static readonly DataBentoSymbolMapper _symbolMapper = new();
+
+    private readonly ConcurrentDictionary<string, Symbol> _pendingSubscriptions = [];
+
+    private readonly Dictionary<uint, Symbol> _subscribedSymbolsByDataBentoInstrumentId = [];
+    private readonly Lock _subscribedSymbolLock = new();
+
     /// <summary>
-    /// Implementation of Custom Data Provider
+    /// Manages Level 1 market data subscriptions and routing of updates to the shared <see cref="IDataAggregator"/>.
+    /// Responsible for tracking and updating individual <see cref="LevelOneMarketData"/> instances per symbol.
     /// </summary>
-    public class DataBentoProvider : IDataQueueHandler
+    private LevelOneServiceManager _levelOneServiceManager;
+
+    private IDataAggregator _aggregator;
+
+    private LiveAPIClient _liveApiClient;
+
+    private bool _initialized;
+
+    /// <summary>
+    /// Returns true if we're currently connected to the Data Provider
+    /// </summary>
+    public bool IsConnected => _liveApiClient.IsConnected;
+
+
+    /// <summary>
+    /// Initializes a new instance of the DataBentoProvider
+    /// </summary>
+    public DataBentoProvider()
+        : this(Config.Get("databento-api-key"))
     {
-        private readonly IDataAggregator _dataAggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(
-            Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager"), forceTypeNameOnExisting: false);
-        private EventBasedDataQueueHandlerSubscriptionManager _subscriptionManager = null!;
-        private readonly List<SubscriptionDataConfig> _activeSubscriptionConfigs = new();
-        private readonly ConcurrentDictionary<Symbol, SubscriptionDataConfig> _subscriptionConfigs = new();
-        private DatabentoRawClient _client = null!;
-        private readonly string _apiKey;
-        private readonly DataBentoDataDownloader _dataDownloader;
-        private bool _potentialUnsupportedResolutionMessageLogged;
-        private bool _sessionStarted = false;
-        private readonly object _sessionLock = new object();
-        private readonly MarketHoursDatabase _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
-        private readonly ConcurrentDictionary<Symbol, DateTimeZone> _symbolExchangeTimeZones = new();
+    }
 
-        /// <summary>
-        /// Returns true if we're currently connected to the Data Provider
-        /// </summary>
-        public bool IsConnected => _client?.IsConnected == true;
-
-        /// <summary>
-        /// Initializes a new instance of the DataBentoProvider
-        /// </summary>
-        public DataBentoProvider()
+    public DataBentoProvider(string apiKey)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
-            _apiKey = Config.Get("databento-api-key");
-            if (string.IsNullOrEmpty(_apiKey))
+            // If the API key is not provided, we can't do anything.
+            // The handler might going to be initialized using a node packet job.
+            return;
+        }
+
+        Initialize(apiKey);
+    }
+
+    /// <summary>
+    /// Common initialization logic
+    /// <param name="apiKey">DataBento API key from config file retrieved on constructor</param>
+    /// </summary>
+    private void Initialize(string apiKey)
+    {
+        ValidateSubscription();
+
+        _aggregator = Composer.Instance.GetPart<IDataAggregator>();
+        if (_aggregator == null)
+        {
+            var aggregatorName = Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager");
+            Log.Trace($"{nameof(DataBentoProvider)}.{nameof(Initialize)}: found no data aggregator instance, creating {aggregatorName}");
+            _aggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(aggregatorName, forceTypeNameOnExisting: false);
+        }
+
+        _historicalApiClient = new(apiKey);
+        if (!_historicalApiClient.IsValidApiKey())
+        {
+            throw new AuthenticationException($"Invalid API key. Please verify your key at: https://databento.com/docs/portal/api-keys");
+        }
+
+        _liveApiClient = new LiveAPIClient(apiKey, HandleLevelOneData);
+        _liveApiClient.SymbolMappingConfirmation += OnSymbolMappingConfirmation;
+        _liveApiClient.ConnectionLost += OnConnectionLost;
+
+        _levelOneServiceManager = new LevelOneServiceManager(
+            _aggregator,
+            (symbols, _) => Subscribe(symbols),
+            (symbols, _) => Unsubscribe(symbols));
+
+        _initialized = true;
+    }
+
+    private void OnConnectionLost(object? _, ConnectionLostEventArgs cle)
+    {
+        Log.Trace($"{nameof(DataBentoProvider)}.{nameof(OnConnectionLost)}: The connection was lost. Starting ReSubscription process");
+
+        var symbols = _levelOneServiceManager.GetSubscribedSymbols();
+
+        Subscribe(symbols);
+
+        Log.Trace($"{nameof(DataBentoProvider)}.{nameof(OnConnectionLost)}: Re-subscription completed successfully for {_levelOneServiceManager.Count} symbol(s).");
+    }
+
+    private void OnSymbolMappingConfirmation(object? _, SymbolMappingConfirmationEventArgs smce)
+    {
+        if (!_pendingSubscriptions.TryRemove(smce.Symbol, out var symbol))
+        {
+            return;
+        }
+
+        lock (_subscribedSymbolLock)
+        {
+            _subscribedSymbolsByDataBentoInstrumentId[smce.InstrumentId] = symbol;
+        }
+    }
+
+    private void HandleLevelOneData(LevelOneData levelOneData)
+    {
+        var symbol = default(Symbol);
+        lock (_subscribedSymbolLock)
+        {
+            if (!_subscribedSymbolsByDataBentoInstrumentId.TryGetValue(levelOneData.Header.InstrumentId, out symbol))
             {
-                throw new ArgumentException("DataBento API key is required. Set 'databento-api-key' in configuration.");
+                return;
+            }
+        }
+        var time = levelOneData.Header.UtcDateTime;
+
+        switch (levelOneData.Action)
+        {
+            // Trade event: this record is the trade; bid/ask are pre-trade/snapshot
+            case ActionType.Trade:
+                _levelOneServiceManager.HandleLastTrade(symbol, time, levelOneData.Size, levelOneData.Price);
+                break;
+            case ActionType.Add:
+            case ActionType.Modify:
+            case ActionType.Cancel:
+                _levelOneServiceManager.HandleQuote(
+                    symbol,
+                    time,
+                    levelOneData.LevelOne.BidPx,
+                    levelOneData.LevelOne.BidSz,
+                    levelOneData.LevelOne.AskPx,
+                    levelOneData.LevelOne.AskSz);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Logic to subscribe to the specified symbols
+    /// </summary>
+    private bool Subscribe(IEnumerable<Symbol> symbols)
+    {
+        foreach (var symbol in symbols)
+        {
+            if (!_symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(symbol.ID.Market, out var dataSetSpecifications))
+            {
+                throw new ArgumentException($"No DataBento dataset mapping found for symbol {symbol} in market {symbol.ID.Market}. Cannot subscribe.");
             }
 
-            _dataDownloader = new DataBentoDataDownloader(_apiKey);
-            Initialize();
-        }
+            var brokerageSymbol = _symbolMapper.GetBrokerageSymbol(symbol);
 
-        /// <summary>
-        /// Initializes a new instance of the DataBentoProvider with custom API key
-        /// </summary>
-        /// <param name="apiKey">DataBento API key</param>
-        public DataBentoProvider(string apiKey)
-        {
-            _apiKey = apiKey ?? throw new ArgumentNullException(nameof(apiKey));
-            _dataDownloader = new DataBentoDataDownloader(_apiKey);
-            Initialize();
-        }
-
-        /// <summary>
-        /// Common initialization logic
-        /// </summary>
-        private void Initialize()
-        {
-            Log.Trace("DataBentoProvider.Initialize(): Starting initialization");
-            _subscriptionManager = new EventBasedDataQueueHandlerSubscriptionManager();
-            _subscriptionManager.SubscribeImpl = (symbols, tickType) =>
+            if (!_pendingSubscriptions.TryAdd(brokerageSymbol, symbol))
             {
-                Log.Trace($"DataBentoProvider.SubscribeImpl(): Received subscription request for {symbols.Count()} symbols, TickType={tickType}");
-                foreach (var symbol in symbols)
-                {
-                    Log.Trace($"DataBentoProvider.SubscribeImpl(): Processing symbol {symbol}");
-                    if (!_subscriptionConfigs.TryGetValue(symbol, out var config))
-                    {
-                        Log.Error($"DataBentoProvider.SubscribeImpl(): No subscription config found for {symbol}");
-                        return false;
-                    }
-                    if (_client?.IsConnected != true)
-                    {
-                        Log.Error($"DataBentoProvider.SubscribeImpl(): Client is not connected. Cannot subscribe to {symbol}");
-                        return false;
-                    }
-
-                    var resolution = config.Resolution > Resolution.Tick ? Resolution.Tick : config.Resolution;
-                    if (!_client.Subscribe(config.Symbol, resolution, config.TickType))
-                    {
-                        Log.Error($"Failed to subscribe to {config.Symbol}");
-                        return false;
-                    }
-
-                    lock (_sessionLock)
-                    {
-                        if (!_sessionStarted)
-                            _sessionStarted = _client.StartSession();
-                    }
-                }
-
-                return true;
-            };
-
-            _subscriptionManager.UnsubscribeImpl = (symbols, tickType) =>
-            {
-                foreach (var symbol in symbols)
-                {
-                    Log.Trace($"DataBentoProvider.UnsubscribeImpl(): Processing symbol {symbol}");
-                    if (_client?.IsConnected != true)
-                    {
-                        throw new InvalidOperationException($"DataBentoProvider.UnsubscribeImpl(): Client is not connected. Cannot unsubscribe from {symbol}");
-                    }
-
-                    _client.Unsubscribe(symbol);
-                }
-
-                return true;
-            };
-
-            // Initialize the live client
-            Log.Trace("DataBentoProvider.Initialize(): Creating DatabentoRawClient");
-            _client = new DatabentoRawClient(_apiKey);
-            _client.DataReceived += OnDataReceived;
-            _client.ConnectionStatusChanged += OnConnectionStatusChanged;
-
-            // Connect to live gateway
-            Log.Trace("DataBentoProvider.Initialize(): Attempting connection to DataBento live gateway");
-            Task.Run(() =>
-            {
-                var connected = _client.Connect();
-                Log.Trace($"DataBentoProvider.Initialize(): Connect() returned {connected}");
-
-                if (connected)
-                {
-                    Log.Trace("DataBentoProvider.Initialize(): Successfully connected to DataBento live gateway");
-                }
-                else
-                {
-                    Log.Error("DataBentoProvider.Initialize(): Failed to connect to DataBento live gateway");
-                }
-            });
-
-
-            Log.Trace("DataBentoProvider.Initialize(): Initialization complete");
-        }
-
-        /// <summary>
-        /// Subscribe to the specified configuration
-        /// </summary>
-        /// <param name="dataConfig">defines the parameters to subscribe to a data feed</param>
-        /// <param name="newDataAvailableHandler">handler to be fired on new data available</param>
-        /// <returns>The new enumerator for this subscription request</returns>
-        public IEnumerator<BaseData>? Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
-        {
-            Log.Trace($"DataBentoProvider.Subscribe(): Received subscription request for {dataConfig.Symbol}, Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
-            if (!CanSubscribe(dataConfig))
-            {
-                Log.Error($"DataBentoProvider.Subscribe(): Cannot subscribe to {dataConfig.Symbol} with Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
-                return null;
+                throw new InvalidOperationException($"Subscription for '{brokerageSymbol}' is already pending.");
             }
-
-            _subscriptionConfigs[dataConfig.Symbol] = dataConfig;
-            var enumerator = _dataAggregator.Add(dataConfig, newDataAvailableHandler);
-            _subscriptionManager.Subscribe(dataConfig);
-            _activeSubscriptionConfigs.Add(dataConfig);
-
-            return enumerator;
+            
+            _liveApiClient.Subscribe(dataSetSpecifications.DataSetID, brokerageSymbol);
         }
 
-        /// <summary>
-        /// Removes the specified configuration
-        /// </summary>
-        /// <param name="dataConfig">Subscription config to be removed</param>
-        public void Unsubscribe(SubscriptionDataConfig dataConfig)
+        return true;
+    }
+
+    private bool Unsubscribe(IEnumerable<Symbol> symbols)
+    {
+        // Please note there is no unsubscribe method. Subscriptions end when the TCP connection closes.
+
+        var symbolsToRemove = symbols.ToHashSet();
+
+        lock (_subscribedSymbolLock)
         {
-            Log.Trace($"DataBentoProvider.Unsubscribe(): Received unsubscription request for {dataConfig.Symbol}, Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
-            _subscriptionConfigs.TryRemove(dataConfig.Symbol, out _);
-            _subscriptionManager.Unsubscribe(dataConfig);
-            var toRemove = _activeSubscriptionConfigs.FirstOrDefault(c => c.Symbol == dataConfig.Symbol && c.TickType == dataConfig.TickType);
-            if (toRemove != null)
+            foreach (var (instrumentId, symbol) in _subscribedSymbolsByDataBentoInstrumentId)
             {
-                Log.Trace($"DataBentoProvider.Unsubscribe(): Removing active subscription for {dataConfig.Symbol}, Resolution={dataConfig.Resolution}, TickType={dataConfig.TickType}");
-                _activeSubscriptionConfigs.Remove(toRemove);
+                if (symbolsToRemove.Contains(symbol))
+                {
+                    _subscribedSymbolsByDataBentoInstrumentId.Remove(instrumentId);
+                }
             }
-            _dataAggregator.Remove(dataConfig);
         }
 
-        /// <summary>
-        /// Sets the job we're subscribing for
-        /// </summary>
-        /// <param name="job">Job we're subscribing for</param>
-        public void SetJob(LiveNodePacket job)
+        return true;
+    }
+
+    /// <summary>
+    /// Checks if this Data provider supports the specified symbol
+    /// </summary>
+    /// <param name="symbol">The symbol</param>
+    /// <returns>returns true if Data Provider supports the specified symbol; otherwise false</returns>
+    private static bool CanSubscribe(Symbol symbol)
+    {
+        if (!_symbolMapper.DataBentoDataSetByLeanMarket.ContainsKey(symbol.ID.Market))
         {
-            // No action required for DataBento since the job details are not used in the subscription process.
+            Log.Error($"No DataBento dataset mapping found for symbol {symbol} in market {symbol.ID.Market}. Cannot subscribe.");
+            return false;
         }
 
-        /// <summary>
-        /// Dispose of unmanaged resources.
-        /// </summary>
-        public void Dispose()
+        return !symbol.Value.Contains("universe", StringComparison.InvariantCultureIgnoreCase) &&
+               !symbol.IsCanonical() &&
+                symbol.SecurityType == SecurityType.Future;
+    }
+
+    /// <summary>
+    /// Subscribe to the specified configuration
+    /// </summary>
+    /// <param name="dataConfig">defines the parameters to subscribe to a data feed</param>
+    /// <param name="newDataAvailableHandler">handler to be fired on new data available</param>
+    /// <returns>The new enumerator for this subscription request</returns>
+    public IEnumerator<BaseData>? Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
+    {
+        if (!CanSubscribe(dataConfig.Symbol))
         {
-            _dataAggregator?.DisposeSafely();
-            _subscriptionManager?.DisposeSafely();
-            _client?.Dispose();
-            _dataDownloader?.Dispose();
+            return null;
         }
 
-        /// <summary>
-        /// Gets the history for the requested security
-        /// </summary>
-        /// <param name="request">The historical data request</param>
-        /// <returns>An enumerable of BaseData points</returns>
-        public IEnumerable<BaseData>? GetHistory(Data.HistoryRequest request)
+        var enumerator = _aggregator.Add(dataConfig, newDataAvailableHandler);
+        _levelOneServiceManager.Subscribe(dataConfig);
+
+        return enumerator;
+    }
+
+    /// <summary>
+    /// Removes the specified configuration
+    /// </summary>
+    /// <param name="dataConfig">Subscription config to be removed</param>
+    public void Unsubscribe(SubscriptionDataConfig dataConfig)
+    {
+        _levelOneServiceManager.Unsubscribe(dataConfig);
+        _aggregator.Remove(dataConfig);
+    }
+
+    /// <summary>
+    /// Sets the job we're subscribing for
+    /// </summary>
+    /// <param name="job">Job we're subscribing for</param>
+    public void SetJob(LiveNodePacket job)
+    {
+        if (_initialized)
         {
-            Log.Trace($"DataBentoProvider.GetHistory(): Received history request for {request.Symbol}, Resolution={request.Resolution}, TickType={request.TickType}");
-            if (!CanSubscribe(request.Symbol))
+            return;
+        }
+
+        if (!job.BrokerageData.TryGetValue("databento-api-key", out var apiKey) || string.IsNullOrWhiteSpace(apiKey))
+        {
+            throw new ArgumentException("The DataBento API key is missing from the brokerage data.");
+        }
+
+        Initialize(apiKey);
+    }
+
+    /// <summary>
+    /// Dispose of unmanaged resources.
+    /// </summary>
+    public void Dispose()
+    {
+        _levelOneServiceManager?.DisposeSafely();
+        _aggregator?.DisposeSafely();
+        _liveApiClient?.DisposeSafely();
+        _historicalApiClient?.DisposeSafely();
+    }
+
+    private class ModulesReadLicenseRead : RestResponse
+    {
+        [JsonProperty(PropertyName = "license")]
+        public string License;
+
+        [JsonProperty(PropertyName = "organizationId")]
+        public string OrganizationId;
+    }
+
+    /// <summary>
+    /// Validate the user of this project has permission to be using it via our web API.
+    /// </summary>
+    private static void ValidateSubscription()
+    {
+        try
+        {
+            const int productId = 427;
+            var userId = Globals.UserId;
+            var token = Globals.UserToken;
+            var organizationId = Globals.OrganizationID;
+            // Verify we can authenticate with this user and token
+            var api = new ApiConnection(userId, token);
+            if (!api.Connected)
             {
-                Log.Error($"DataBentoProvider.GetHistory(): Cannot provide history for {request.Symbol} with Resolution={request.Resolution}, TickType={request.TickType}");
-                return null;
+                throw new ArgumentException("Invalid api user id or token, cannot authenticate subscription.");
             }
-
+            // Compile the information we want to send when validating
+            var information = new Dictionary<string, object>()
+                {
+                    {"productId", productId},
+                    {"machineName", Environment.MachineName},
+                    {"userName", Environment.UserName},
+                    {"domainName", Environment.UserDomainName},
+                    {"os", Environment.OSVersion}
+                };
+            // IP and Mac Address Information
             try
             {
-                // Use the data downloader to get historical data
-                var parameters = new DataDownloaderGetParameters(
-                    request.Symbol,
-                    request.Resolution,
-                    request.StartTimeUtc,
-                    request.EndTimeUtc,
-                    request.TickType);
-
-                return _dataDownloader.Get(parameters);
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"DataBentoProvider.GetHistory(): Failed to get history for {request.Symbol}: {ex.Message}");
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Checks if this Data provider supports the specified symbol
-        /// </summary>
-        /// <param name="symbol">The symbol</param>
-        /// <returns>returns true if Data Provider supports the specified symbol; otherwise false</returns>
-        private bool CanSubscribe(Symbol symbol)
-        {
-            return !symbol.Value.Contains("universe", StringComparison.InvariantCultureIgnoreCase) &&
-                   !symbol.IsCanonical() &&
-                   IsSecurityTypeSupported(symbol.SecurityType);
-        }
-
-        /// <summary>
-        /// Determines whether or not the specified config can be subscribed to
-        /// </summary>
-        private bool CanSubscribe(SubscriptionDataConfig config)
-        {
-            return CanSubscribe(config.Symbol) &&
-                   IsSupported(config.SecurityType, config.Type, config.TickType, config.Resolution);
-        }
-
-        /// <summary>
-        /// Checks if the security type is supported
-        /// </summary>
-        /// <param name="securityType">Security type to check</param>
-        /// <returns>True if supported</returns>
-        private bool IsSecurityTypeSupported(SecurityType securityType)
-        {
-            // DataBento primarily supports futures, but also has equity and option coverage
-            return securityType == SecurityType.Future;
-        }
-
-        /// <summary>
-        /// Determines if the specified subscription is supported
-        /// </summary>
-        private bool IsSupported(SecurityType securityType, Type dataType, TickType tickType, Resolution resolution)
-        {
-            // Check supported security types
-            if (!IsSecurityTypeSupported(securityType))
-            {
-                throw new NotSupportedException($"Unsupported security type: {securityType}");
-            }
-
-            // Check supported data types
-            if (dataType != typeof(TradeBar) &&
-                dataType != typeof(QuoteBar) &&
-                dataType != typeof(Tick) &&
-                dataType != typeof(OpenInterest))
-            {
-                throw new NotSupportedException($"Unsupported data type: {dataType}");
-            }
-
-            // Warn about potential limitations for tick data
-            // I'm mimicing polygon implementation with this
-            if (!_potentialUnsupportedResolutionMessageLogged)
-            {
-                _potentialUnsupportedResolutionMessageLogged = true;
-                Log.Trace("DataBentoDataProvider.IsSupported(): " +
-                    $"Subscription for {securityType}-{dataType}-{tickType}-{resolution} will be attempted. " +
-                    $"An Advanced DataBento subscription plan is required to stream tick data.");
-            }
-
-            return true;
-        }
-
-        /// <summary>
-        /// Converts the given UTC time into the symbol security exchange time zone
-        /// </summary>
-        private DateTime GetTickTime(Symbol symbol, DateTime utcTime)
-        {
-            var exchangeTimeZone = _symbolExchangeTimeZones.GetOrAdd(symbol, sym =>
-            {
-                if (_marketHoursDatabase.TryGetEntry(sym.ID.Market, sym, sym.SecurityType, out var entry))
+                var interfaceDictionary = new List<Dictionary<string, object>>();
+                foreach (var nic in NetworkInterface.GetAllNetworkInterfaces().Where(nic => nic.OperationalStatus == OperationalStatus.Up))
                 {
-                    return entry.ExchangeHours.TimeZone;
-                }
-                // Futures default to Chicago
-                return TimeZones.Chicago;
-            });
-
-            return utcTime.ConvertFromUtc(exchangeTimeZone);
-        }
-
-        // <summary>
-        /// Handles data received from the live client
-        /// </summary>
-        private void OnDataReceived(object? sender, BaseData data)
-        {
-            try
-            {
-                if (data is Tick tick)
-                {
-                    tick.Time = GetTickTime(tick.Symbol, tick.Time);
-                    _dataAggregator.Update(tick);
-
-                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated tick - Symbol: {tick.Symbol}, " +
-                            $"TickType: {tick.TickType}, Price: {tick.Value}, Quantity: {tick.Quantity}");
-                }
-                else if (data is TradeBar tradeBar)
-                {
-                    tradeBar.Time = GetTickTime(tradeBar.Symbol, tradeBar.Time);
-                    tradeBar.EndTime = GetTickTime(tradeBar.Symbol, tradeBar.EndTime);
-                    _dataAggregator.Update(tradeBar);
-
-                    Log.Trace($"DataBentoProvider.OnDataReceived(): Updated TradeBar - Symbol: {tradeBar.Symbol}, " +
-                            $"O:{tradeBar.Open} H:{tradeBar.High} L:{tradeBar.Low} C:{tradeBar.Close} V:{tradeBar.Volume}");
-                }
-                else
-                {
-                    data.Time = GetTickTime(data.Symbol, data.Time);
-                    _dataAggregator.Update(data);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"DataBentoProvider.OnDataReceived(): Error updating data aggregator: {ex.Message}\n{ex.StackTrace}");
-            }
-        }
-
-        /// <summary>
-        /// Handles connection status changes from the live client
-        /// </summary>
-        private void OnConnectionStatusChanged(object? sender, bool isConnected)
-        {
-            Log.Trace($"DataBentoProvider.OnConnectionStatusChanged(): Connection status changed to: {isConnected}");
-
-            if (isConnected)
-            {
-                // Reset session flag on reconnection
-                lock (_sessionLock)
-                {
-                    _sessionStarted = false;
-                }
-
-                // Resubscribe to all active subscriptions 
-                foreach (var config in _activeSubscriptionConfigs)
-                {
-                    _client.Subscribe(config.Symbol, config.Resolution, config.TickType);
-                }
-
-                // Start session after resubscribing
-                if (_activeSubscriptionConfigs.Any())
-                {
-                    lock (_sessionLock)
+                    var interfaceInformation = new Dictionary<string, object>();
+                    // Get UnicastAddresses
+                    var addresses = nic.GetIPProperties().UnicastAddresses
+                        .Select(uniAddress => uniAddress.Address)
+                        .Where(address => !IPAddress.IsLoopback(address)).Select(x => x.ToString());
+                    // If this interface has non-loopback addresses, we will include it
+                    if (!addresses.IsNullOrEmpty())
                     {
-                        if (!_sessionStarted)
-                        {
-                            Log.Trace("DataBentoProvider.OnConnectionStatusChanged(): Starting session after reconnection");
-                            _sessionStarted = _client.StartSession();
-                        }
+                        interfaceInformation.Add("unicastAddresses", addresses);
+                        // Get MAC address
+                        interfaceInformation.Add("MAC", nic.GetPhysicalAddress().ToString());
+                        // Add Interface name
+                        interfaceInformation.Add("name", nic.Name);
+                        // Add these to our dictionary
+                        interfaceDictionary.Add(interfaceInformation);
                     }
                 }
+                information.Add("networkInterfaces", interfaceDictionary);
             }
+            catch (Exception)
+            {
+                // NOP, not necessary to crash if fails to extract and add this information
+            }
+            // Include our OrganizationId if specified
+            if (!string.IsNullOrEmpty(organizationId))
+            {
+                information.Add("organizationId", organizationId);
+            }
+
+            // Create HTTP request
+            using var request = ApiUtils.CreateJsonPostRequest("modules/license/read", information);
+
+            api.TryRequest(request, out ModulesReadLicenseRead result);
+            if (!result.Success)
+            {
+                throw new InvalidOperationException($"Request for subscriptions from web failed, Response Errors : {string.Join(',', result.Errors)}");
+            }
+
+            var encryptedData = result.License;
+            // Decrypt the data we received
+            DateTime? expirationDate = null;
+            long? stamp = null;
+            bool? isValid = null;
+            if (encryptedData != null)
+            {
+                // Fetch the org id from the response if it was not set, we need it to generate our validation key
+                if (string.IsNullOrEmpty(organizationId))
+                {
+                    organizationId = result.OrganizationId;
+                }
+                // Create our combination key
+                var password = $"{token}-{organizationId}";
+                var key = SHA256.HashData(Encoding.UTF8.GetBytes(password));
+                // Split the data
+                var info = encryptedData.Split("::");
+                var buffer = Convert.FromBase64String(info[0]);
+                var iv = Convert.FromBase64String(info[1]);
+                // Decrypt our information
+                using var aes = new AesManaged();
+                var decryptor = aes.CreateDecryptor(key, iv);
+                using var memoryStream = new MemoryStream(buffer);
+                using var cryptoStream = new CryptoStream(memoryStream, decryptor, CryptoStreamMode.Read);
+                using var streamReader = new StreamReader(cryptoStream);
+                var decryptedData = streamReader.ReadToEnd();
+                if (!decryptedData.IsNullOrEmpty())
+                {
+                    var jsonInfo = JsonConvert.DeserializeObject<JObject>(decryptedData);
+                    expirationDate = jsonInfo["expiration"]?.Value<DateTime>();
+                    isValid = jsonInfo["isValid"]?.Value<bool>();
+                    stamp = jsonInfo["stamped"]?.Value<int>();
+                }
+            }
+            // Validate our conditions
+            if (!expirationDate.HasValue || !isValid.HasValue || !stamp.HasValue)
+            {
+                throw new InvalidOperationException("Failed to validate subscription.");
+            }
+
+            var nowUtc = DateTime.UtcNow;
+            var timeSpan = nowUtc - Time.UnixTimeStampToDateTime(stamp.Value);
+            if (timeSpan > TimeSpan.FromHours(12))
+            {
+                throw new InvalidOperationException("Invalid API response.");
+            }
+            if (!isValid.Value)
+            {
+                throw new ArgumentException($"Your subscription is not valid, please check your product subscriptions on our website.");
+            }
+            if (expirationDate < nowUtc)
+            {
+                throw new ArgumentException($"Your subscription expired {expirationDate}, please renew in order to use this product.");
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Error($"PolygonDataProvider.ValidateSubscription(): Failed during validation, shutting down. Error : {e.Message}");
+            throw;
         }
     }
 }

@@ -1,6 +1,6 @@
 /*
  * QUANTCONNECT.COM - Democratizing Finance, Empowering Individuals.
- * Lean Algorithmic Trading Engine v2.0. Copyright 2014 QuantConnect Corporation.
+ * Lean Algorithmic Trading Engine v2.0. Copyright 2026 QuantConnect Corporation.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,275 +14,249 @@
  *
 */
 
-using System;
 using NodaTime;
-using QuantConnect.Data;
-using QuantConnect.Data.Market;
-using QuantConnect.Lean.Engine.DataFeeds;
-using QuantConnect.Lean.Engine.HistoricalData;
-using QuantConnect.Logging;
 using QuantConnect.Util;
-using QuantConnect.Lean.DataSource.DataBento;
-using QuantConnect.Interfaces;
-using System.Collections.Generic;
-using QuantConnect.Configuration;
+using QuantConnect.Data;
+using QuantConnect.Logging;
 using QuantConnect.Securities;
-using QuantConnect.Data.Consolidators;
+using QuantConnect.Data.Market;
+using QuantConnect.Lean.Engine.HistoricalData;
 
-namespace QuantConnect.Lean.DataSource.DataBento
+namespace QuantConnect.Lean.DataSource.DataBento;
+
+/// <summary>
+/// Implements a history provider for DataBento historical data.
+/// Uses consolidators to produce the requested resolution when necessary.
+/// </summary>
+public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
 {
+    private static int _dataPointCount;
+
     /// <summary>
-    /// DataBento implementation of <see cref="IHistoryProvider"/>
+    /// Indicates whether a error for an invalid start time has been fired, where the start time is greater than or equal to the end time in UTC.
     /// </summary>
-    public partial class DataBentoHistoryProvider : SynchronizingHistoryProvider
+    private volatile bool _invalidStartTimeErrorFired;
+
+    /// <summary>
+    /// Indicates whether the warning for invalid <see cref="SecurityType"/> has been fired.
+    /// </summary>
+    private volatile bool _invalidSecurityTypeWarningFired;
+
+    /// <summary>
+    /// Indicates whether a DataBento dataset error has already been logged.
+    /// </summary>
+    private bool _dataBentoDatasetErrorFired;
+
+    /// <summary>
+    /// Gets the total number of data points emitted by this history provider
+    /// </summary>
+    public override int DataPointCount => _dataPointCount;
+
+    /// <summary>
+    /// Initializes this history provider to work for the specified job
+    /// </summary>
+    /// <param name="parameters">The initialization parameters</param>
+    public override void Initialize(HistoryProviderInitializeParameters parameters)
     {
-        private int _dataPointCount;
-        private DataBentoDataDownloader _dataDownloader;
-        private volatile bool _invalidStartTimeErrorFired;
-        private volatile bool _invalidTickTypeAndResolutionErrorFired;
-        private volatile bool _unsupportedTickTypeMessagedLogged;
-        private MarketHoursDatabase _marketHoursDatabase;
-        private bool _unsupportedSecurityTypeMessageLogged;
-        private bool _unsupportedDataTypeMessageLogged;
-        private bool _potentialUnsupportedResolutionMessageLogged;
-        
-        /// <summary>
-        /// Gets the total number of data points emitted by this history provider
-        /// </summary>
-        public override int DataPointCount => _dataPointCount;
+    }
 
-        /// <summary>
-        /// Initializes this history provider to work for the specified job
-        /// </summary>
-        /// <param name="parameters">The initialization parameters</param>
-        public override void Initialize(HistoryProviderInitializeParameters parameters)
+    /// <summary>
+    /// Gets the history for the requested security
+    /// </summary>
+    /// <param name="historyRequest">The historical data request</param>
+    /// <returns>An enumerable of BaseData points</returns>
+    public override IEnumerable<BaseData>? GetHistory(HistoryRequest historyRequest)
+    {
+        if (!CanSubscribe(historyRequest.Symbol))
         {
-            _dataDownloader = new DataBentoDataDownloader();
-            _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
+            if (!_invalidSecurityTypeWarningFired)
+            {
+                _invalidSecurityTypeWarningFired = true;
+                Log.Trace($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}:" +
+                    $"Unsupported SecurityType '{historyRequest.Symbol.SecurityType}' for symbol '{historyRequest.Symbol}'.");
+            }
+            return null;
         }
 
-        /// <summary>
-        /// Gets the history for the requested securities
-        /// </summary>
-        /// <param name="requests">The historical data requests</param>
-        /// <param name="sliceTimeZone">The time zone used when time stamping the slice instances</param>
-        /// <returns>An enumerable of the slices of data covering the span specified in each request</returns>
-        public override IEnumerable<Slice>? GetHistory(IEnumerable<HistoryRequest> requests, DateTimeZone sliceTimeZone)
+        if (historyRequest.EndTimeUtc < historyRequest.StartTimeUtc)
         {
-            var subscriptions = new List<Subscription>();
-            foreach (var request in requests)
+            if (!_invalidStartTimeErrorFired)
             {
-                var history = GetHistory(request);
-                if (history == null)
-                {
-                    continue;
-                }
-
-                var subscription = CreateSubscription(request, history);
-                if (!subscription.MoveNext())
-                {
-                    continue;
-                }
-
-                subscriptions.Add(subscription);
+                _invalidStartTimeErrorFired = true;
+                Log.Error($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}: Invalid date range: the start date must be earlier than the end date.");
             }
-
-            if (subscriptions.Count == 0)
-            {
-                return null;
-            }
-            return CreateSliceEnumerableFromSubscriptions(subscriptions, sliceTimeZone);
+            return null;
         }
 
-        /// <summary>
-        /// Gets the history for the requested security
-        /// </summary>
-        /// <param name="request">The historical data request</param>
-        /// <returns>An enumerable of BaseData points</returns>
-        public IEnumerable<BaseData>? GetHistory(HistoryRequest request)
+        if (!_symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(historyRequest.Symbol.ID.Market, out var dataSetSpecifications) || dataSetSpecifications == null)
         {
-            if (request.Symbol.IsCanonical() ||
-                !IsSupported(request.Symbol.SecurityType, request.DataType, request.TickType, request.Resolution))
+            if (!_dataBentoDatasetErrorFired)
             {
-                // It is Logged in IsSupported(...)
-                return null;
+                _dataBentoDatasetErrorFired = true;
+                Log.Error($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}: " +
+                    $"DataBento dataset not found for symbol '{historyRequest.Symbol.Value}, Market = {historyRequest.Symbol.ID.Market}."
+                );
             }
-
-            if (request.TickType == TickType.OpenInterest)
-            {
-                if (!_unsupportedTickTypeMessagedLogged)
-                {
-                    _unsupportedTickTypeMessagedLogged = true;
-                    Log.Trace($"DataBentoHistoryProvider.GetHistory(): Unsupported tick type: {TickType.OpenInterest}");
-                }
-                return null;
-            }
-
-            if (request.EndTimeUtc < request.StartTimeUtc)
-            {
-                if (!_invalidStartTimeErrorFired)
-                {
-                    _invalidStartTimeErrorFired = true;
-                    Log.Error($"{nameof(DataBentoHistoryProvider)}.{nameof(GetHistory)}:InvalidDateRange. The history request start date must precede the end date, no history returned");
-                }
-                return null;
-            }
-
-
-            // Use the trade aggregates API for resolutions above tick for fastest results
-            if (request.TickType == TickType.Trade && request.Resolution > Resolution.Tick)
-            {
-                var data = GetAggregates(request);
-
-                if (data == null)
-                {
-                    return null;
-                }
-
-                return data;
-            }
-
-            return GetHistoryThroughDataConsolidator(request);
+            return null;
         }
 
-        private IEnumerable<BaseData>? GetHistoryThroughDataConsolidator(HistoryRequest request)
+        if (dataSetSpecifications.TryGetDelayWarningMessage(out var message))
         {
-            IDataConsolidator consolidator;
-            IEnumerable<BaseData> history;
+            Log.Trace(message);
+        }
+        var dataSet = dataSetSpecifications.DataSetID;
 
-            if (request.TickType == TickType.Trade)
-            {
-                consolidator = request.Resolution != Resolution.Tick
-                    ? new TickConsolidator(request.Resolution.ToTimeSpan())
-                    : FilteredIdentityDataConsolidator.ForTickType(request.TickType);
-                history = GetTrades(request);
-            }
-            else
-            {
-                consolidator = request.Resolution != Resolution.Tick
-                    ? new TickQuoteBarConsolidator(request.Resolution.ToTimeSpan())
-                    : FilteredIdentityDataConsolidator.ForTickType(request.TickType);
-                history = GetQuotes(request);
-            }
+        var history = default(IEnumerable<BaseData>);
+        var brokerageSymbol = _symbolMapper.GetBrokerageSymbol(historyRequest.Symbol);
+        switch (historyRequest.TickType)
+        {
+            case TickType.Trade when historyRequest.Resolution == Resolution.Tick:
+                history = GetTradeTicks(historyRequest, brokerageSymbol, dataSet);
+                break;
+            case TickType.Trade:
+                history = GetAggregatedTradeBars(historyRequest, brokerageSymbol, dataSet);
+                break;
+            case TickType.Quote when historyRequest.Resolution == Resolution.Tick:
+                history = GetQuoteTicks(historyRequest, brokerageSymbol, dataSet);
+                break;
+            case TickType.Quote when historyRequest is { Resolution: Resolution.Second or Resolution.Minute }:
+                history = GetIntraDayQuoteBars(historyRequest, historyRequest.Resolution, brokerageSymbol, dataSet);
+                break;
+            case TickType.Quote:
+                history = GetInterDayQuoteBars(historyRequest, brokerageSymbol, dataSet);
+                break;
+            case TickType.OpenInterest:
+                history = GetOpenInterestBars(historyRequest, brokerageSymbol, dataSet);
+                break;
+        }
 
-            BaseData? consolidatedData = null;
-            DataConsolidatedHandler onDataConsolidated = (s, e) =>
-            {
-                consolidatedData = (BaseData)e;
-            };
-            consolidator.DataConsolidated += onDataConsolidated;
+        if (history == null)
+        {
+            return null;
+        }
 
-            foreach (var data in history)
+        return FilterHistory(history, historyRequest, historyRequest.StartTimeLocal, historyRequest.EndTimeLocal);
+    }
+
+    private static IEnumerable<BaseData> FilterHistory(IEnumerable<BaseData> history, HistoryRequest request, DateTime startTimeLocal, DateTime endTimeLocal)
+    {
+        // cleaning the data before returning it back to user
+        foreach (var bar in history)
+        {
+            if (bar.Time >= startTimeLocal && bar.EndTime <= endTimeLocal)
             {
-                consolidator.Update(data);
-                if (consolidatedData != null)
+                if (request.ExchangeHours.IsOpen(bar.Time, bar.EndTime, request.IncludeExtendedMarketHours))
                 {
                     Interlocked.Increment(ref _dataPointCount);
-                    yield return consolidatedData;
-                    consolidatedData = null;
+                    yield return bar;
                 }
             }
-
-            consolidator.DataConsolidated -= onDataConsolidated;
-            consolidator.DisposeSafely();
         }
+    }
 
-        /// <summary>
-        /// Gets the trade bars for the specified history request
-        /// </summary>
-        private IEnumerable<TradeBar> GetAggregates(HistoryRequest request)
+    private IEnumerable<BaseData> GetOpenInterestBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
+    {
+        foreach (var oi in _historicalApiClient.GetOpenInterest(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
-            var resolutionTimeSpan = request.Resolution.ToTimeSpan();
-                        foreach (var date in Time.EachDay(request.StartTimeUtc, request.EndTimeUtc))
+            if (oi.Header.UtcDateTime == null)
             {
-                var start = date;
-                var end = date + Time.OneDay;
+                continue;
+            }
 
-                var parameters = new DataDownloaderGetParameters(request.Symbol, request.Resolution, start, end, request.TickType);
-                var data = _dataDownloader.Get(parameters);
-                if (data == null) continue;
+            yield return new OpenInterest(oi.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, oi.Quantity);
+        }
+    }
 
-                foreach (var bar in data)
+    private IEnumerable<BaseData> GetAggregatedTradeBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
+    {
+        var period = request.Resolution.ToTimeSpan();
+        foreach (var b in _historicalApiClient.GetHistoricalOhlcvBars(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, request.Resolution, dataBentoDataSet))
+        {
+            if (b.Header.UtcDateTime == null)
+            {
+                continue;
+            }
+
+            yield return new TradeBar(b.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, b.Open, b.High, b.Low, b.Close, b.Volume, period);
+        }
+    }
+
+    /// <summary>
+    /// Gets the trade ticks that will potentially be aggregated for the specified history request
+    /// </summary>
+    private IEnumerable<BaseData> GetTradeTicks(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
+    {
+        foreach (var t in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
+        {
+            if (t.Price.HasValue)
+            {
+                if (t.Header.UtcDateTime == null)
                 {
-                    var tradeBar = (TradeBar)bar;
-                    if (tradeBar.Time >= request.StartTimeUtc && tradeBar.EndTime <= request.EndTimeUtc)
-                    {
-                        yield return tradeBar;
-                    }
+                    continue;
                 }
+
+                yield return new Tick(t.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, "", "", t.Size, t.Price.Value);
             }
         }
+    }
 
-        /// <summary>
-        /// Gets the trade ticks that will potentially be aggregated for the specified history request
-        /// </summary>
-        private IEnumerable<BaseData> GetTrades(HistoryRequest request)
+    private IEnumerable<BaseData>? GetInterDayQuoteBars(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
+    {
+        foreach (var qb in LeanData.AggregateQuoteBars(GetIntraDayQuoteBars(request, Resolution.Minute, brokerageSymbol, dataBentoDataSet), request.Symbol, request.Resolution.ToTimeSpan()))
         {
-            var parameters = new DataDownloaderGetParameters(request.Symbol, Resolution.Tick, request.StartTimeUtc, request.EndTimeUtc, request.TickType);
-            return _dataDownloader.Get(parameters);
+            yield return qb;
         }
+    }
 
-        /// <summary>
-        /// Gets the quote ticks that will potentially be aggregated for the specified history request
-        /// </summary>
-        private IEnumerable<BaseData> GetQuotes(HistoryRequest request)
+    /// <summary>
+    /// Gets the quote ticks that will potentially be aggregated for the specified history request
+    /// </summary>
+    private IEnumerable<QuoteBar> GetIntraDayQuoteBars(HistoryRequest request, Resolution resolution, string brokerageSymbol, string dataBentoDataSet)
+    {
+        var period = resolution.ToTimeSpan();
+        foreach (var q in _historicalApiClient.GetBestBidOfferIntervals(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, resolution, dataBentoDataSet))
         {
-            var parameters = new DataDownloaderGetParameters(request.Symbol, Resolution.Tick, request.StartTimeUtc, request.EndTimeUtc, request.TickType);
-            return _dataDownloader.Get(parameters);
-        }
-
-        /// <summary>
-        /// Checks if the security type is supported
-        /// </summary>
-        /// <param name="securityType">Security type to check</param>
-        /// <returns>True if supported</returns>
-        private bool IsSecurityTypeSupported(SecurityType securityType)
-        {
-            // DataBento primarily supports futures, but also has equity and option coverage
-            return securityType == SecurityType.Future;
-        }
-
-        /// <summary>
-        /// Determines if the specified subscription is supported
-        /// </summary>
-        private bool IsSupported(SecurityType securityType, Type dataType, TickType tickType, Resolution resolution)
-        {
-            // Check supported security types
-            if (!IsSecurityTypeSupported(securityType))
+            if (q.LevelOne == null || !q.LevelOne.HasBidOrAskPrice())
             {
-                if (!_unsupportedSecurityTypeMessageLogged)
-                {
-                    _unsupportedSecurityTypeMessageLogged = true;
-                    Log.Trace($"DataBentoDataProvider.IsSupported(): Unsupported security type: {securityType}");
-                }
-                return false;
+                continue;
             }
 
-            // Check supported data types
-            if (dataType != typeof(TradeBar) &&
-                dataType != typeof(QuoteBar) &&
-                dataType != typeof(Tick) &&
-                dataType != typeof(OpenInterest))
+            if (q.UtcDateTime == null)
             {
-                if (!_unsupportedDataTypeMessageLogged)
-                {
-                    _unsupportedDataTypeMessageLogged = true;
-                    Log.Trace($"DataBentoDataProvider.IsSupported(): Unsupported data type: {dataType}");
-                }
-                return false;
+                continue;
             }
 
-            // Warn about potential limitations for tick data
-            // I'm mimicing polygon implementation with this
-            if (!_potentialUnsupportedResolutionMessageLogged)
+            var bar = new QuoteBar(q.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, bid: null, lastBidSize: decimal.Zero, ask: null, lastAskSize: decimal.Zero, period);
+
+            if (q.LevelOne.BidPx.HasValue)
             {
-                _potentialUnsupportedResolutionMessageLogged = true;
-                Log.Trace("DataBentoDataProvider.IsSupported(): " +
-                    $"Subscription for {securityType}-{dataType}-{tickType}-{resolution} will be attempted. " +
-                    $"An Advanced DataBento subscription plan is required to stream tick data.");
+                bar.UpdateBid(q.LevelOne.BidPx.Value, q.LevelOne.BidSz);
             }
 
-            return true;
+            if (q.LevelOne.AskPx.HasValue)
+            {
+                bar.UpdateAsk(q.LevelOne.AskPx.Value, q.LevelOne.AskSz);
+            }
+
+            yield return bar;
+        }
+    }
+
+    private IEnumerable<BaseData> GetQuoteTicks(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
+    {
+        foreach (var q in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
+        {
+            if (q.LevelOne == null || !q.LevelOne.HasBidOrAskPrice())
+            {
+                continue;
+            }
+
+            if (q.Header.UtcDateTime == null)
+            {
+                continue;
+            }
+
+            yield return new Tick(q.Header.UtcDateTime.Value.ConvertFromUtc(request.ExchangeHours.TimeZone), request.Symbol, q.LevelOne.BidSz, q.LevelOne.BidPx ?? 0m, q.LevelOne.AskSz, q.LevelOne.AskPx ?? 0m);
         }
     }
 }

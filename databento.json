@@ -29,7 +29,13 @@
 				"Future"
 			],
 			"markets": [
-				"CME"
+				"EUREX",
+				"CBOT",
+				"CME",
+				"COMEX",
+				"NYMEX",
+				"ICE",
+				"NYSELIFFE"
 			]
 		}
 	}
