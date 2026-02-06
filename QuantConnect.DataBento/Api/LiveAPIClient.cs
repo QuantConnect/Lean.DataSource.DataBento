@@ -16,7 +16,6 @@
 
 using QuantConnect.Util;
 using QuantConnect.Logging;
-using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.DataSource.DataBento.Models;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 using QuantConnect.Lean.DataSource.DataBento.Exceptions;
@@ -89,20 +88,7 @@ public sealed class LiveAPIClient : IDisposable
 
         if (!liveDataTcpClient.IsConnected)
         {
-            var msg = $"Unable to establish a connection to the DataBento Live API (Dataset: {dataSet}).";
-
-            // TODO: remove after resolving https://github.com/QuantConnect/Lean/issues/9272
-            var resultHandler = Composer.Instance.GetPart<IResultHandler>();
-            if (resultHandler == null)
-            {
-                Log.Error($"LiveDataTcpClientWrapper[{dataSet}].{nameof(EnsureDatasetConnection)}: result handler is null");
-            }
-            else
-            {
-                resultHandler.RuntimeError(msg);
-            }
-
-            throw new Exception(msg);
+            throw new Exception($"Unable to establish a connection to the DataBento Live API (Dataset: {dataSet}).");
         }
 
         Log.Trace($"LiveAPIClient.{nameof(EnsureDatasetConnection)}: Successfully connected to DataBento live API (Dataset: {dataSet})");

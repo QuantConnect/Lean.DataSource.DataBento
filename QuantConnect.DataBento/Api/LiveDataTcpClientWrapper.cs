@@ -19,6 +19,7 @@ using QuantConnect.Util;
 using System.Net.Sockets;
 using QuantConnect.Logging;
 using System.Security.Authentication;
+using QuantConnect.Lean.Engine.Results;
 using QuantConnect.Lean.DataSource.DataBento.Exceptions;
 using QuantConnect.Lean.DataSource.DataBento.Models.Live;
 
@@ -105,9 +106,23 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
 
         if (attemptToConnect >= MaxConnectionAttempts)
         {
-            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Connect)}: " +
-                $"Maximum retry limit ({MaxConnectionAttempts}) reached. Connection not established.");
+            var msg = $"Failed to connect to live data feed for dataset [{_dataSet}] after {MaxConnectionAttempts} attempts. Last error: {error}";
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(Connect)}: {msg}");
+            TerminateLeanAlgorithmForcelly(msg);
         }
+    }
+
+    private void TerminateLeanAlgorithmForcelly(string msg)
+    {
+        // TODO: remove after resolving https://github.com/QuantConnect/Lean/issues/9272
+        var resultHandler = Composer.Instance.GetPart<IResultHandler>();
+        if (resultHandler == null)
+        {
+            Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(TerminateLeanAlgorithmForcelly)}: result handler is null");
+            return;
+        }
+
+        resultHandler.RuntimeError(msg);
     }
 
     /// <summary>
@@ -180,6 +195,7 @@ public sealed class LiveDataTcpClientWrapper : IDisposable
             catch (LiveApiErrorException e)
             {
                 Log.Error($"LiveDataTcpClientWrapper[{_dataSet}].{nameof(MonitorDataReceiverConnection)}: {e.Message}");
+                TerminateLeanAlgorithmForcelly($"{e.Message} in DataBento[{_dataSet}]");
                 break;
             }
             finally
