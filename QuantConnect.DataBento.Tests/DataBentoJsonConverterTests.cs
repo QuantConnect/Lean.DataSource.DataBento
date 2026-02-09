@@ -548,6 +548,31 @@ public class DataBentoJsonConverterTests
         ""payload"": null
     }
 }").SetArgDisplayNames("AuthAuthenticationFailed");
+
+            yield return new TestCaseData(@"{
+    ""detail"": [
+        {
+            ""type"": ""missing"",
+            ""loc"": [
+                ""body"",
+                ""start_date""
+            ],
+            ""msg"": ""Field required"",
+            ""input"": null,
+            ""url"": ""https://errors.pydantic.dev/2.11/v/missing""
+        }
+    ]
+}").SetArgDisplayNames("Missing parameters");
+
+            yield return new TestCaseData(@"{
+    ""detail"": {
+        ""case"": ""symbology_invalid_request"",
+        ""message"": ""Unable to process symbology with parameters: `dataset=GLBX.MDP3`, `stype_in=raw_symbol`, `stype_out=raw_symbol`. See the symbology docs for supported combinations per dataset https://databento.com/docs/standards-and-conventions/symbology."",
+        ""status_code"": 422,
+        ""docs"": ""https://databento.com/docs/api-reference-historical/basics/symbology"",
+        ""payload"": null
+    }
+}").SetArgDisplayNames("SymbologyInvalidRequest");
         }
     }
 
@@ -611,5 +636,54 @@ public class DataBentoJsonConverterTests
 
         Assert.AreEqual(RecordType.Error, error.Header.Rtype);
         Assert.IsNotEmpty(error.Error);
+    }
+
+    [Test]
+    public void DeserializeSymbologyResolveMessage()
+    {
+        var json = @"{
+    ""result"": {
+        ""ESM7"": [
+            {
+                ""d0"": ""2026-02-09"",
+                ""d1"": ""2026-02-10"",
+                ""s"": ""42140856""
+            }
+        ],
+        ""ESU8"": [
+            {
+                ""d0"": ""2026-02-09"",
+                ""d1"": ""2026-02-10"",
+                ""s"": ""42140861""
+            }
+        ],
+        ""ESZ6-ESU7"": [
+            {
+                ""d0"": ""2026-02-09"",
+                ""d1"": ""2026-02-10"",
+                ""s"": ""42023506""
+            }
+        ]
+    },
+    ""symbols"": [
+        ""ES.FUT""
+    ],
+    ""stype_in"": ""parent"",
+    ""stype_out"": ""instrument_id"",
+    ""start_date"": ""2026-02-09"",
+    ""end_date"": ""2026-02-10"",
+    ""partial"": [],
+    ""not_found"": [],
+    ""message"": ""OK"",
+    ""status"": 0
+}";
+        var symbology = json.DeserializeObject<SymbologyResolve>();
+
+        Assert.NotNull(symbology);
+        Assert.Greater(symbology.Result.Keys.Count, 0);
+        foreach (var (k, _) in symbology.Result)
+        {
+            Assert.IsFalse(string.IsNullOrEmpty(k));
+        }
     }
 }

@@ -198,4 +198,18 @@ public class DataBentoHistoricalApiClientTests
         Log.Trace($"{nameof(ShouldFetchTicks)}: {ticker} | [{startDate} - {endDate}] | {resolution} = {dataCounter} (ticks)");
         Assert.Greater(dataCounter, 0);
     }
+
+    [TestCase("ES.FUT", Description = "Securities.Futures.Indices.SP500EMini")]
+    [TestCase("ZO.FUT", Description = "Securities.Futures.Grains.Oats")]
+    public void Should(string parentSymbolGroup)
+    {
+        var res = _client.ResolveSymbols(parentSymbolGroup, DateTime.UtcNow.Date, Dataset);
+        Assert.IsNotNull(res);
+        Assert.Greater(res.Count(), 0);
+        foreach (var symbol in res)
+        {
+            Assert.IsNotNull(symbol);
+            Assert.IsNotEmpty(symbol);
+        }
+    }
 }

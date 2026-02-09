@@ -17,6 +17,7 @@
 using System;
 using NUnit.Framework;
 using System.Collections.Generic;
+using QuantConnect.Lean.DataSource.DataBento.Models;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 
@@ -62,5 +63,51 @@ public class DataBentoSymbolMapperTests
         var actualExist = _symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(market, out var actualDataSet);
         Assert.AreEqual(expectedExist, actualExist);
         Assert.AreEqual(expectedDataSet, actualDataSet);
+    }
+
+    private static IEnumerable<TestCaseData> SymbolToParentGroupParameters
+    {
+        get
+        {
+            var es = Symbol.CreateFuture(Securities.Futures.Indices.SP500EMini, Market.CME, new DateTime(2026, 3, 20));
+            yield return new TestCaseData(es, "ES.FUT", PredefinedDataSets.GLBX_MDP3.DataSetID);
+
+            var gf = Symbol.CreateFuture(Securities.Futures.Meats.FeederCattle, Market.CME, new(2026, 03, 26));
+            yield return new TestCaseData(gf, "GF.FUT", PredefinedDataSets.GLBX_MDP3.DataSetID);
+
+            var zo = Symbol.CreateFuture(Securities.Futures.Grains.Oats, Market.CBOT, new(2026, 03, 13));
+            yield return new TestCaseData(zo, "ZO.FUT", PredefinedDataSets.GLBX_MDP3.DataSetID);
+        }
+    }
+
+    [TestCaseSource(nameof(SymbolToParentGroupParameters))]
+    public void ReturnsCorrectSymbolParentGroup(Symbol symbol, string expectedParentGroup, string expectedDataSet)
+    {
+        var (actualParentGroup, actualDataset) = _symbolMapper.GetSymbolParentGroupAndDataset(symbol);
+
+        Assert.AreEqual(expectedParentGroup, actualParentGroup);
+        Assert.AreEqual(expectedDataSet, actualDataset);
+    }
+
+    private static IEnumerable<TestCaseData> BrokerageSymbolTestCases
+    {
+        get
+        {
+            var esMarch = Symbol.CreateFuture(Securities.Futures.Indices.SP500EMini, Market.CME, new DateTime(2026, 3, 20));
+            yield return new TestCaseData("ESH6", esMarch);
+
+            var esJune = Symbol.CreateFuture(Securities.Futures.Indices.SP500EMini, Market.CME, new DateTime(2027, 6, 18));
+            yield return new TestCaseData("ESM7", esJune);
+
+            var esSeptember = Symbol.CreateFuture(Securities.Futures.Indices.SP500EMini, Market.CME, new DateTime(2028, 9, 15));
+            yield return new TestCaseData("ESU8", esSeptember);
+        }
+    }
+
+    [TestCaseSource(nameof(BrokerageSymbolTestCases))]
+    public void ReturnsCorrectSymbol(string brokerageSymbol, Symbol expectedSymbol)
+    {
+        var symbol = _symbolMapper.GetLeanSymbol(brokerageSymbol, expectedSymbol.SecurityType, market: null);
+        Assert.AreEqual(expectedSymbol, symbol);
     }
 }

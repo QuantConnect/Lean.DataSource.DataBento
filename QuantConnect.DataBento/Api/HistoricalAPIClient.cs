@@ -99,9 +99,39 @@ public class HistoricalAPIClient : IDisposable
     /// </returns>
     public bool IsValidApiKey()
     {
-        using var requestMessage = new HttpRequestMessage(HttpMethod.Get, "/v0/metadata.list_publishers");
-        using var response = _httpClient.Send(requestMessage);
-        return response.StatusCode != HttpStatusCode.Unauthorized;
+        return Send(HttpMethod.Get, "/v0/metadata.list_publishers").StatusCode != HttpStatusCode.Unauthorized;
+    }
+
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="dataSet"></param>
+    /// <param name="parentSymbolGroup">[ROOT].OPT, [ROOT].FUT</param>
+    /// <returns></returns>
+    public IEnumerable<string> ResolveSymbols(string parentSymbolGroup, DateTime initSearchDate, string dataSet)
+    {
+        var body = new Dictionary<string, string>
+        {
+            { "dataset",  dataSet},
+            { "symbols", parentSymbolGroup },
+            { "stype_in", "parent" },
+            { "stype_out", "instrument_id" },
+            { "start_date", DateTime.UtcNow.Date.ToIso8601Invariant() }
+        };
+
+        using var response = Send(HttpMethod.Post, "/v0/symbology.resolve", body);
+
+        using var stream = response.Content.ReadAsStream();
+        using var reader = new StreamReader(stream);
+
+        var line = default(string);
+        while ((line = reader.ReadLine()) != null)
+        {
+            foreach (var (symbol, _) in line.DeserializeObject<SymbologyResolve>().Result)
+            {
+                yield return symbol;
+            }
+        }
     }
 
     public IEnumerable<OpenHighLowCloseVolumeData> GetHistoricalOhlcvBars(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
@@ -193,14 +223,7 @@ public class HistoricalAPIClient : IDisposable
             formData["start"] = Time.DateTimeToUnixTimeStampNanoseconds(start).ToStringInvariant();
             formData["end"] = Time.DateTimeToUnixTimeStampNanoseconds(end).ToStringInvariant();
 
-            using var content = new FormUrlEncodedContent(formData);
-
-            using var requestMessage = new HttpRequestMessage(HttpMethod.Post, "/v0/timeseries.get_range")
-            {
-                Content = content
-            };
-
-            using var response = _httpClient.Send(requestMessage);
+            using var response = Send(HttpMethod.Post, "/v0/timeseries.get_range", formData);
 
             LogWarnings(response);
 
@@ -289,6 +312,18 @@ public class HistoricalAPIClient : IDisposable
             }
             start = lastEmittedTime.Value.AddTicks(1);
         } while (httpStatusCode != HttpStatusCode.OK);
+    }
+
+    private HttpResponseMessage Send(HttpMethod method, string requestUri, Dictionary<string, string>? body = null)
+    {
+        using var requestMessage = new HttpRequestMessage(method, requestUri);
+
+        if (body != null)
+        {
+            requestMessage.Content = new FormUrlEncodedContent(body);
+        }
+
+        return _httpClient.Send(requestMessage);
     }
 
     public void Dispose()

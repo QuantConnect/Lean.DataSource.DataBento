@@ -68,6 +68,32 @@ public class DataBentoSymbolMapper : ISymbolMapper
     public Symbol GetLeanSymbol(string brokerageSymbol, SecurityType securityType, string market,
         DateTime expirationDate = new DateTime(), decimal strike = 0, OptionRight optionRight = 0)
     {
-        throw new NotImplementedException("This method is not used in the current implementation.");
+        switch (securityType)
+        {
+            case SecurityType.Future:
+                return SymbolRepresentation.ParseFutureSymbol(brokerageSymbol);
+            default:
+                throw new NotSupportedException($"The unsupported security type: {securityType}");
+        }
+    }
+
+    public (string, string) GetSymbolParentGroupAndDataset(Symbol symbol)
+    {
+        var parentGroup = default(string);
+        switch (symbol.SecurityType)
+        {
+            case SecurityType.Future:
+                parentGroup = symbol.ID.Symbol + ".FUT";
+                break;
+            default:
+                throw new NotSupportedException($"The unsupported security type: {symbol.SecurityType}");
+        }
+
+        if (!DataBentoDataSetByLeanMarket.TryGetValue(symbol.ID.Market, out var dataSetSpecifications) || dataSetSpecifications == null)
+        {
+            throw new ArgumentException($"No DataBento dataset mapping found for symbol {symbol} in market {symbol.ID.Market}.");
+        }
+
+        return (parentGroup, dataSetSpecifications.DataSetID);
     }
 }

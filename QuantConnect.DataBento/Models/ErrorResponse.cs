@@ -117,4 +117,15 @@ public static class ErrorCases
     /// The authentication process failed due to invalid credentials.
     /// </summary>
     public const string AuthAuthenticationFailed = "auth_authentication_failed";
+
+    /// <summary>
+    /// Indicates an invalid symbology request due to an unsupported
+    /// dataset and symbol type combination.
+    /// </summary>
+    /// <remarks>
+    /// Returned when symbology cannot be processed with the provided parameters
+    /// (e.g., <c>dataset=GLBX.MDP3</c>, <c>stype_in=raw_symbol</c>, <c>stype_out=raw_symbol</c>).
+    /// See the Databento symbology documentation for supported combinations.
+    /// </remarks>
+    public const string SymbologyInvalidRequest = "symbology_invalid_request";
 }
