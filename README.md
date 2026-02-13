@@ -4,14 +4,14 @@
 
 [![Build Status](https://github.com/QuantConnect/LeanDataSdk/workflows/Build%20%26%20Test/badge.svg)](https://github.com/QuantConnect/LeanDataSdk/actions?query=workflow%3A%22Build%20%26%20Test%22)
 
-Welcome to the DataBento Library repository! This library, built on .NET 6, provides seamless integration with the QuantConnect LEAN Algorithmic Trading Engine. It empowers users to interact with DaatBento's services to create powerful trading algorithms 
+Welcome to the DataBento Library repository! This library, built on .NET 6, provides seamless integration with the QuantConnect LEAN Algorithmic Trading Engine. It empowers users to interact with DataBento's services to create powerful trading algorithms 
 
 ### Introduction
 
 The Lean Data SDK is a cross-platform template repository for developing custom data types for Lean.
 These data types will be consumed by [QuantConnect](https://www.quantconnect.com/) trading algorithms and research environment, locally or in the cloud.
 
-It is composed by example .Net solution for the data type and converter scripts.
+It is composed of an example .NET solution for the data type and converter scripts.
 
 DataBento Library is an open-source project written in C#, designed to simplify the process of accessing real-time and historical financial market data. With support for Futures Data across the CME exchange and low latency, it offers a comprehensive solution for algorithmic trading.
 
@@ -23,15 +23,15 @@ The data downloader and converter script can be developed in different ways: C# 
 - The python script should be compatible with python 3.6.8
 - Bash script will run on Ubuntu Bionic
 
-Specifically, the enviroment where these scripts will be run is [quantconnect/research](https://hub.docker.com/repository/docker/quantconnect/research) based on [quantconnect/lean:foundation](https://hub.docker.com/repository/docker/quantconnect/lean).
+Specifically, the environment where these scripts will be run is [quantconnect/research](https://hub.docker.com/repository/docker/quantconnect/research) based on [quantconnect/lean:foundation](https://hub.docker.com/repository/docker/quantconnect/lean).
 
-### DatBento Overview
+### DataBento Overview
 DataBento provides real time and historical market data through many powerful and developer-friendly APIs. Currently this implementation uses the Globex dataset to access CME
 exchanges and provide data on CME products. DataBento provides a wide array of datasets, and exchanges for stocks, futures, and options.
 
 ### Tutorial
 
-You can use the following command line arguments to launch the [LEAN CLI] (https://github.com/quantConnect/Lean-cli) pip project with DataBento.
+You can use the following command line arguments to launch the [LEAN CLI](https://github.com/quantConnect/Lean-cli) pip project with DataBento.
 
 #### Downloading data
 ```
@@ -56,7 +56,7 @@ lean live deploy "My Project" --data-provider-live DataBento --brokerage "Paper 
 ### Installation
 
 To contribute to the DataBento API Connector Library for .NET 6 within QuantConnect LEAN, follow these steps:
- - Obtain API Key: Visit [DataBento] (https://databento.com/) and sign up for an API key.
+ - Obtain API Key: Visit [DataBento](https://databento.com/) and sign up for an API key.
  - Fork the Project: Fork the repository by clicking the "Fork" button at the top right of the GitHub page.
  - Clone Your Forked Repository:
 
@@ -64,11 +64,11 @@ Configure your project by
  - Set the databento-api-key in your QuantConnect configuration (config.json or environment variables).
 
 ### Documentation
-Refer to the [documentation] (https://databento.com/docs/) for detailed information on the library's functions, parameters, and usage examples.
+Refer to the [documentation](https://databento.com/docs/) for detailed information on the library's functions, parameters, and usage examples.
 
 ### Price Plan
 
-For detailed information on DataBento's pricing plans, please refer to the [DataBento Pricing] (https://databento.com/pricing) page.
+For detailed information on DataBento's pricing plans, please refer to the [DataBento Pricing](https://databento.com/pricing) page.
 
 ### License
 
