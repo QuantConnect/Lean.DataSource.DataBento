@@ -73,7 +73,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
             {
                 _invalidSecurityTypeWarningFired = true;
                 Log.Trace($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}:" +
-                    $"Unsupported SecurityType '{historyRequest.Symbol.SecurityType}' for symbol '{historyRequest.Symbol}'.");
+                    $"History request not supported for symbol '{historyRequest.Symbol}' (SecurityType: {historyRequest.Symbol.SecurityType}, Canonical: {historyRequest.Symbol.IsCanonical()}).");
             }
             return null;
         }
