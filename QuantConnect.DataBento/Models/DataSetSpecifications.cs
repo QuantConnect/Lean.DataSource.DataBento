@@ -56,7 +56,7 @@ public static class PredefinedDataSets
 /// </summary>
 public class DataSetSpecifications
 {
-    private readonly Lock _lock = new();
+    private static readonly Lock _lock = new();
     /// <summary>
     /// Internal flag to ensure the delay warning message is only generated once.
     /// </summary>
