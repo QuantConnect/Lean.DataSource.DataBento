@@ -30,7 +30,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 [TestFixture]
 public class DataBentoHistoryProviderTests
 {
-    private DataBentoProvider _historyDataProvider;
+    private DataBentoDataProvider _historyDataProvider;
 
     [OneTimeSetUp]
     public void OneTimeSetUp()
@@ -42,7 +42,7 @@ public class DataBentoHistoryProviderTests
             Assert.Fail("DataBento API key is not set. Please set 'databento-api-key' in the configuration to run these tests.");
         }
 
-        _historyDataProvider = new DataBentoProvider(apiKey);
+        _historyDataProvider = new DataBentoDataProvider(apiKey);
     }
 
     [OneTimeTearDown]
