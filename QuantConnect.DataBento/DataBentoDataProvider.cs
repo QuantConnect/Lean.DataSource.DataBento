@@ -42,7 +42,7 @@ namespace QuantConnect.Lean.DataSource.DataBento;
 /// Handles Subscribing, Unsubscribing, and fetching historical data from DataBento.
 /// It will handle if a symbol is subscribable and will log errors if it is not.
 /// </summary>
-public partial class DataBentoProvider : IDataQueueHandler
+public partial class DataBentoDataProvider : IDataQueueHandler
 {
     private HistoricalAPIClient _historicalApiClient;
 
@@ -72,14 +72,14 @@ public partial class DataBentoProvider : IDataQueueHandler
 
 
     /// <summary>
-    /// Initializes a new instance of the DataBentoProvider
+    /// Initializes a new instance of the DataBentoDataProvider
     /// </summary>
-    public DataBentoProvider()
+    public DataBentoDataProvider()
         : this(Config.Get("databento-api-key"))
     {
     }
 
-    public DataBentoProvider(string apiKey)
+    public DataBentoDataProvider(string apiKey)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
         {
@@ -103,7 +103,7 @@ public partial class DataBentoProvider : IDataQueueHandler
         if (_aggregator == null)
         {
             var aggregatorName = Config.Get("data-aggregator", "QuantConnect.Lean.Engine.DataFeeds.AggregationManager");
-            Log.Trace($"{nameof(DataBentoProvider)}.{nameof(Initialize)}: found no data aggregator instance, creating {aggregatorName}");
+            Log.Trace($"{nameof(DataBentoDataProvider)}.{nameof(Initialize)}: found no data aggregator instance, creating {aggregatorName}");
             _aggregator = Composer.Instance.GetExportedValueByTypeName<IDataAggregator>(aggregatorName, forceTypeNameOnExisting: false);
         }
 
@@ -127,13 +127,13 @@ public partial class DataBentoProvider : IDataQueueHandler
 
     private void OnConnectionLost(object? _, ConnectionLostEventArgs cle)
     {
-        Log.Trace($"{nameof(DataBentoProvider)}.{nameof(OnConnectionLost)}: The connection was lost. Starting ReSubscription process");
+        Log.Trace($"{nameof(DataBentoDataProvider)}.{nameof(OnConnectionLost)}: The connection was lost. Starting ReSubscription process");
 
         var symbols = _levelOneServiceManager.GetSubscribedSymbols();
 
         Subscribe(symbols);
 
-        Log.Trace($"{nameof(DataBentoProvider)}.{nameof(OnConnectionLost)}: Re-subscription completed successfully for {_levelOneServiceManager.Count} symbol(s).");
+        Log.Trace($"{nameof(DataBentoDataProvider)}.{nameof(OnConnectionLost)}: Re-subscription completed successfully for {_levelOneServiceManager.Count} symbol(s).");
     }
 
     private void OnSymbolMappingConfirmation(object? _, SymbolMappingConfirmationEventArgs smce)

@@ -28,7 +28,7 @@ namespace QuantConnect.Lean.DataSource.DataBento;
 /// Implements a history provider for DataBento historical data.
 /// Uses consolidators to produce the requested resolution when necessary.
 /// </summary>
-public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
+public partial class DataBentoDataProvider : MappedSynchronizingHistoryProvider
 {
     private static int _dataPointCount;
 
@@ -72,7 +72,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
             if (!_invalidSecurityTypeWarningFired)
             {
                 _invalidSecurityTypeWarningFired = true;
-                Log.Trace($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}:" +
+                Log.Trace($"{nameof(DataBentoDataProvider)}.{nameof(GetHistory)}:" +
                     $"History request not supported for symbol '{historyRequest.Symbol}' (SecurityType: {historyRequest.Symbol.SecurityType}, Canonical: {historyRequest.Symbol.IsCanonical()}).");
             }
             return null;
@@ -83,7 +83,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
             if (!_invalidStartTimeErrorFired)
             {
                 _invalidStartTimeErrorFired = true;
-                Log.Error($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}: Invalid date range: the start date must be earlier than the end date.");
+                Log.Error($"{nameof(DataBentoDataProvider)}.{nameof(GetHistory)}: Invalid date range: the start date must be earlier than the end date.");
             }
             return null;
         }
@@ -93,7 +93,7 @@ public partial class DataBentoProvider : MappedSynchronizingHistoryProvider
             if (!_dataBentoDatasetErrorFired)
             {
                 _dataBentoDatasetErrorFired = true;
-                Log.Error($"{nameof(DataBentoProvider)}.{nameof(GetHistory)}: " +
+                Log.Error($"{nameof(DataBentoDataProvider)}.{nameof(GetHistory)}: " +
                     $"DataBento dataset not found for symbol '{historyRequest.Symbol.Value}, Market = {historyRequest.Symbol.ID.Market}."
                 );
             }

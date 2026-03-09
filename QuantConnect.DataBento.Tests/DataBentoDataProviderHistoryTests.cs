@@ -27,12 +27,12 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 [TestFixture]
 public class DataBentoDataProviderHistoryTests
 {
-    private DataBentoProvider _historyDataProvider;
+    private DataBentoDataProvider _historyDataProvider;
 
     [SetUp]
     public void SetUp()
     {
-        _historyDataProvider = new DataBentoProvider();
+        _historyDataProvider = new DataBentoDataProvider();
     }
 
     [TearDown]

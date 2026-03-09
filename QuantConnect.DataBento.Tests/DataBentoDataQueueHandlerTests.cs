@@ -33,7 +33,7 @@ namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 [TestFixture]
 public class DataBentoDataQueueHandlerTests
 {
-    private DataBentoProvider _dataProvider;
+    private DataBentoDataProvider _dataProvider;
     private CancellationTokenSource _cancellationTokenSource;
 
     [SetUp]

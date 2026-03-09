@@ -29,7 +29,7 @@ public class DataBentoDataDownloader : IDataDownloader, IDisposable
     /// <summary>
     /// Provides access to historical market data via the DataBento service.
     /// </summary>
-    private readonly DataBentoProvider _historyProvider;
+    private readonly DataBentoDataProvider _historyProvider;
 
     /// <summary>
     /// Provides exchange trading hours and market-specific time zone information.
@@ -52,7 +52,7 @@ public class DataBentoDataDownloader : IDataDownloader, IDisposable
     /// <param name="apiKey">The DataBento API key.</param>
     public DataBentoDataDownloader(string apiKey)
     {
-        _historyProvider = new DataBentoProvider(apiKey);
+        _historyProvider = new DataBentoDataProvider(apiKey);
         _marketHoursDatabase = MarketHoursDatabase.FromDataFolder();
     }
 
