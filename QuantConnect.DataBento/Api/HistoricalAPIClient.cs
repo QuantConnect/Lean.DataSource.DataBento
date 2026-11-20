@@ -55,6 +55,12 @@ public class HistoricalAPIClient : IDisposable
     private const string MBP1Schema = "mbp-1";
 
     /// <summary>
+    /// Every trade event, without book updates (MBP-0).
+    /// </summary>
+    /// <remarks>Docs: <see href="https://databento.com/docs/schemas-and-data-formats/trades"/></remarks>
+    private const string TradesSchema = "trades";
+
+    /// <summary>
     /// BBO on interval (BBO) provides the last best bid, best offer, and sale at 1-second. This is a subset of MBP-1.
     /// </summary>
     /// <remarks>https://databento.com/docs/schemas-and-data-formats/bbo</remarks>
@@ -133,6 +139,11 @@ public class HistoricalAPIClient : IDisposable
         return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, MBP1Schema, dataSet);
     }
 
+    public IEnumerable<LevelOneData> GetTrades(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, string dataSet)
+    {
+        return GetRange<LevelOneData>(symbol, startDateTimeUtc, endDateTimeUtc, TradesSchema, dataSet);
+    }
+
     public IEnumerable<BestBidOfferInterval> GetBestBidOfferIntervals(string symbol, DateTime startDateTimeUtc, DateTime endDateTimeUtc, Resolution resolution, string dataSet)
     {
         var schema = default(string);
@@ -175,23 +186,26 @@ public class HistoricalAPIClient : IDisposable
 
         // Prevent HTTP client timeouts for large historical range requests.
         // Explicitly cap the number of returned records per request based on the schema
-        switch (schema)
+        int? limit = schema switch
         {
-            case MBP1Schema:
-                formData["limit"] = "10000";
-                break;
-            case OHLCV1sSchema:
-                formData["limit"] = "432000"; // 5 days 
-                break;
+            MBP1Schema or TradesSchema => 10_000,
+            OHLCV1sSchema => 432_000, // 5 days
+            _ => null
+        };
+        if (limit.HasValue)
+        {
+            formData["limit"] = limit.Value.ToStringInvariant();
         }
 
-        var start = startDateTimeUtc;
-        var end = endDateTimeUtc;
-        var httpStatusCode = default(HttpStatusCode);
-        do
+        var startNs = Time.DateTimeToUnixTimeStampNanoseconds(startDateTimeUtc);
+        var endNs = Time.DateTimeToUnixTimeStampNanoseconds(endDateTimeUtc);
+        // Records sharing an index timestamp can straddle a page boundary, so the next page starts
+        // at the last page's final timestamp (start is inclusive) and skips the ones already emitted.
+        var skip = 0;
+        while (true)
         {
-            formData["start"] = Time.DateTimeToUnixTimeStampNanoseconds(start).ToStringInvariant();
-            formData["end"] = Time.DateTimeToUnixTimeStampNanoseconds(end).ToStringInvariant();
+            formData["start"] = startNs.ToStringInvariant();
+            formData["end"] = endNs.ToStringInvariant();
 
             using var content = new FormUrlEncodedContent(formData);
 
@@ -227,21 +241,24 @@ public class HistoricalAPIClient : IDisposable
                 switch (error.Detail.Case)
                 {
                     case ErrorCases.DataStartBeforeAvailableStart:
-                        start = error.Detail.Payload.AvailableStart.UtcDateTime;
+                        var availableStart = error.Detail.Payload.AvailableStart.UtcDateTime;
+                        startNs = Time.DateTimeToUnixTimeStampNanoseconds(availableStart);
+                        skip = 0;
                         if (!_dataStartBeforeAvailableStartErrorFired)
                         {
                             _dataStartBeforeAvailableStartErrorFired = true;
                             LogUnprocessableContentError(dataSet, symbol, schema,
-                                $"Message: {error.Detail.Message} Adjust[Start]: Requested = {startDateTimeUtc:O}, New = {start:O}");
+                                $"Message: {error.Detail.Message} Adjust[Start]: Requested = {startDateTimeUtc:O}, New = {availableStart:O}");
                         }
                         continue;
                     case ErrorCases.DataEndAfterAvailableEnd:
-                        end = error.Detail.Payload.AvailableEnd.UtcDateTime;
+                        var availableEnd = error.Detail.Payload.AvailableEnd.UtcDateTime;
+                        endNs = Time.DateTimeToUnixTimeStampNanoseconds(availableEnd);
                         if (!_dataEndAfterAvailableEndErrorFired)
                         {
                             _dataEndAfterAvailableEndErrorFired = true;
                             LogUnprocessableContentError(dataSet, symbol, schema,
-                                $"Message: {error.Detail.Message} Adjust[End]: Requested = {endDateTimeUtc:O}, New = {end:O}");
+                                $"Message: {error.Detail.Message} Adjust[End]: Requested = {endDateTimeUtc:O}, New = {availableEnd:O}");
                         }
                         continue;
                     case ErrorCases.DataTimeRangeStartOnOrAfterEnd:
@@ -264,31 +281,45 @@ public class HistoricalAPIClient : IDisposable
                 }
             }
 
-            httpStatusCode = response.EnsureSuccessStatusCode().StatusCode;
+            response.EnsureSuccessStatusCode();
 
-            var lastEmitted = default(T);
+            var count = 0;
+            var lastIndexTimestamp = default(ulong);
+            var lastIndexTimestampCount = 0;
             while ((line = reader.ReadLine()) != null)
             {
-                lastEmitted = line.DeserializeObject<T>();
-
-                if (lastEmitted == null)
+                var record = line.DeserializeObject<T>();
+                if (record == null)
                 {
                     continue;
                 }
 
-                yield return lastEmitted;
+                count++;
+                if (record.IndexTimestamp == lastIndexTimestamp)
+                {
+                    lastIndexTimestampCount++;
+                }
+                else
+                {
+                    lastIndexTimestamp = record.IndexTimestamp;
+                    lastIndexTimestampCount = 1;
+                }
+
+                if (count > skip)
+                {
+                    yield return record;
+                }
             }
-            // Advance start by one tick to move the time window forward without duplication.
-            // The API range is inclusive, so this ensures the next request starts
-            // strictly after the last emitted record and avoids re-fetching it.
-            var lastEmittedTime = (lastEmitted as BestBidOfferInterval)?.UtcDateTime ?? lastEmitted?.Header.UtcDateTime;
-            if (!lastEmittedTime.HasValue)
+
+            // Databento answers 200 OK when the limit truncates a response: only a short page is the last one
+            if (!limit.HasValue || count < limit.Value)
             {
-                LogDetailError("AdvanceStartByOneTick", line, response, formData);
                 yield break;
             }
-            start = lastEmittedTime.Value.AddTicks(1);
-        } while (httpStatusCode != HttpStatusCode.OK);
+
+            startNs = Convert.ToInt64(lastIndexTimestamp);
+            skip = lastIndexTimestampCount;
+        }
     }
 
     public void Dispose()
