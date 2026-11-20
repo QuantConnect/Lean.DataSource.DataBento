@@ -61,6 +61,6 @@ public class DataBentoSymbolMapperTests
     {
         var actualExist = _symbolMapper.DataBentoDataSetByLeanMarket.TryGetValue(market, out var actualDataSet);
         Assert.AreEqual(expectedExist, actualExist);
-        Assert.AreEqual(expectedDataSet, actualDataSet);
+        Assert.AreEqual(expectedDataSet, actualDataSet?.DataSetID);
     }
 }

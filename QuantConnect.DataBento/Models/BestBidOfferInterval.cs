@@ -18,11 +18,6 @@ namespace QuantConnect.Lean.DataSource.DataBento.Models;
 public sealed class BestBidOfferInterval : LevelOneDataBase
 {
     /// <summary>
-    /// The capture-server-received timestamp expressed as the number of nanoseconds since the UNIX epoch.
-    /// </summary>
-    public ulong? TsRecv { get; set; }
-
-    /// <summary>
     /// Gets the event timestamp converted to a UTC <see cref="DateTime"/>,
     /// or <c>null</c> when the timestamp is undefined.
     /// </summary>

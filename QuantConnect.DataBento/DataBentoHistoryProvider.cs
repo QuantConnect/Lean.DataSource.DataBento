@@ -186,7 +186,8 @@ public partial class DataBentoDataProvider : MappedSynchronizingHistoryProvider
     /// </summary>
     private IEnumerable<BaseData> GetTradeTicks(HistoryRequest request, string brokerageSymbol, string dataBentoDataSet)
     {
-        foreach (var t in _historicalApiClient.GetLevelOneData(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
+        // Not mbp-1: its book updates carry a price too and would come back as trades
+        foreach (var t in _historicalApiClient.GetTrades(brokerageSymbol, request.StartTimeUtc, request.EndTimeUtc, dataBentoDataSet))
         {
             if (t.Price.HasValue)
             {

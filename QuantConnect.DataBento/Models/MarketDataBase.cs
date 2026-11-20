@@ -29,4 +29,16 @@ public abstract class MarketDataBase
     /// </summary>
     [JsonProperty("hd")]
     public Header Header { get; set; }
+
+    /// <summary>
+    /// The capture-server-received timestamp in nanoseconds since the UNIX epoch, when the schema carries one.
+    /// </summary>
+    public ulong? TsRecv { get; set; }
+
+    /// <summary>
+    /// The timestamp Databento sorts and filters historical requests on:
+    /// <see cref="TsRecv"/> when the schema has it, otherwise <see cref="Header.TsEvent"/>.
+    /// </summary>
+    /// <remarks>See <see href="https://databento.com/docs/standards-and-conventions/common-fields-enums-types#timestamps"/></remarks>
+    public ulong IndexTimestamp => TsRecv ?? Header.TsEvent;
 }

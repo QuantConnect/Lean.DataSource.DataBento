@@ -86,6 +86,7 @@ public class DataConverter : JsonConverter<MarketDataBase>
             case RecordType.OpenHighLowCloseVolume1Second:
                 marketDataBase = new OpenHighLowCloseVolumeData();
                 break;
+            case RecordType.MarketByPriceDepth0:
             case RecordType.MarketByPriceDepth1:
                 marketDataBase = new LevelOneData();
                 break;

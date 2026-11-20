@@ -25,7 +25,8 @@ jobs:
         uses: actions/checkout@v2
         continue-on-error: true
         with:
-          ref: ${{ github.ref }}
+          # On a pull request github.ref is refs/pull/N/merge, which names an unrelated Lean PR
+          ref: ${{ github.head_ref || github.ref }}
           repository: QuantConnect/Lean
           path: Lean
 
@@ -42,9 +43,8 @@ jobs:
       - name: Run build and tests
         run: |
           # BuildDataSource
-          dotnet build ./QuantConnect.DataSource.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1 && \
+          dotnet build ./QuantConnect.DataBento/QuantConnect.DataSource.DataBento.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1 && \
           # BuildTests
-          dotnet build ./tests/Tests.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1 && \
-          # Run Tests
-          dotnet test ./tests/bin/Release/net9.0/Tests.dll
-
+          dotnet build ./QuantConnect.DataBento.Tests/QuantConnect.DataSource.DataBento.Tests.csproj /p:Configuration=Release /v:quiet /p:WarningLevel=1 && \
+          # Run Tests: the others call the Databento API, and CI has no key
+          dotnet test ./QuantConnect.DataBento.Tests/bin/Release/QuantConnect.Lean.DataSource.DataBento.Tests.dll --filter "FullyQualifiedName~DataBentoJsonConverterTests|FullyQualifiedName~DataBentoSymbolMapperTests"

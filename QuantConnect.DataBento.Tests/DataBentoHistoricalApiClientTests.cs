@@ -20,6 +20,7 @@ using QuantConnect.Logging;
 using System.Collections.Generic;
 using QuantConnect.Configuration;
 using QuantConnect.Lean.DataSource.DataBento.Api;
+using QuantConnect.Lean.DataSource.DataBento.Models.Enums;
 
 namespace QuantConnect.Lean.DataSource.DataBento.Tests;
 
@@ -177,7 +178,35 @@ public class DataBentoHistoricalApiClientTests
         Assert.Greater(dataCounter, 0);
     }
 
-    [TestCase("ESH6", "2025/01/11", "2026/01/20", Resolution.Tick)]
+    [Test]
+    public void GetTradesPagesPastLimitWithoutGapsOrDuplicates()
+    {
+        var start = new DateTime(2025, 1, 6, 14, 30, 0, DateTimeKind.Utc);
+        var end = start.AddMinutes(5);
+
+        var trades = _client.GetTrades("ESH5", start, end, Dataset).ToList();
+
+        Assert.Greater(trades.Count, 10_000, "The window must span more than one page");
+        Assert.IsTrue(trades.All(t => t.Action == ActionType.Trade));
+        var barVolume = _client.GetHistoricalOhlcvBars("ESH5", start, end, Resolution.Minute, Dataset).Sum(b => b.Volume);
+        Assert.AreEqual(barVolume, trades.Sum(t => (decimal)t.Size));
+    }
+
+    [Test]
+    public void GetLevelOneDataPagesPastLimitWithoutGapsOrDuplicates()
+    {
+        var start = new DateTime(2025, 1, 6, 13, 0, 0, DateTimeKind.Utc);
+        var end = start.AddMinutes(6);
+
+        var records = _client.GetLevelOneData("ESH5", start, end, Dataset).ToList();
+
+        Assert.Greater(records.Count, 10_000, "The window must span more than one page");
+        Assert.IsTrue(records.Any(r => r.Action != ActionType.Trade), "mbp-1 carries book updates as well as trades");
+        var tradeVolume = _client.GetTrades("ESH5", start, end, Dataset).Sum(t => t.Size);
+        Assert.AreEqual(tradeVolume, records.Where(r => r.Action == ActionType.Trade).Sum(r => r.Size));
+    }
+
+    [TestCase("ESH6", "2026/01/20 14:30", "2026/01/20 14:31", Resolution.Tick)]
     public void ShouldFetchTicks(string ticker, DateTime startDate, DateTime endDate, Resolution resolution)
     {
         var dataCounter = 0;
