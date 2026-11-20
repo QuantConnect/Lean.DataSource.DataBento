@@ -25,7 +25,8 @@ jobs:
         uses: actions/checkout@v2
         continue-on-error: true
         with:
-          ref: ${{ github.ref }}
+          # On a pull request github.ref is refs/pull/N/merge, which names an unrelated Lean PR
+          ref: ${{ github.head_ref || github.ref }}
           repository: QuantConnect/Lean
           path: Lean
 
